@@ -112,6 +112,8 @@ class AugmentedFashionMnistDataset(Dataset):
             x = self.transform(x)
         return x, self.y[item]
 
+    def __len__(self):
+        return self.y.numel()
 
 if __name__ == "__main__":
     user_args = parse_args()
