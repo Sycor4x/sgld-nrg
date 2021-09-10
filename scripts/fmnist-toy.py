@@ -54,15 +54,45 @@ class SimpleNet(nn.Module):
             nn.ELU(),
             nn.Conv2d(32, 64, 4, 1),
             # nn.BatchNorm2d(64),
-            nn.ELU(),
             nn.MaxPool2d(2),
+            nn.ELU(),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(7744, 128),
+            nn.ELU(),
+            nn.Linear(128, 10),
+        )
+
+    def forward(self, x):
+        x_cnn = self.conv(x)
+        x_flat = x_cnn.flatten(1)
+        x_logit = self.fc(x_flat)
+        return x_logit
+
+    def logsumexp_logits(self, x):
+        logits = self.forward(x)
+        return torch.logsumexp(logits, dim=1)
+
+
+class ResidNet(nn.Module):
+    def __init__(self):
+        super(ResidNet, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, 4, 1),
+            # nn.BatchNorm2d(32),
+            nn.ELU(),
+            nn.Conv2d(32, 64, 4, 1),
+            # nn.BatchNorm2d(64),
+            nn.MaxPool2d(2),
+            nn.ELU(),
         )
         self.fc_proj = nn.Linear(7744, 128)
         self.fc_resid = nn.Sequential(
-            nn.Linear(128, 128),
             # nn.BatchNorm1d(128),
             nn.ELU(),
-            # nn.Dropout(0.5),
+            nn.Linear(128, 128),
+            nn.ELU(),
+            # nn.BatchNorm1d(128),
             nn.Linear(128, 128),
             nn.ELU(),
         )
@@ -85,7 +115,7 @@ class SgldLogitHarness(object):
     def __init__(
         self, net: nn.Module, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
     ):
-        assert isinstance(replay_buffer, ReplayBuffer)
+        assert isinstance(replay_buffer, ClassReplayBuffer)
         assert isinstance(sgld_lr, float) and sgld_lr > 0.0
         assert isinstance(sgld_step, int) and sgld_step > 0
         assert isinstance(noise, float) and noise > 0.0
@@ -99,38 +129,39 @@ class SgldLogitHarness(object):
     def __len__(self):
         return len(self.replay)
 
-    def get_energy(self, x_hat_):
-        return self.net.logsumexp_logits(x_hat_)
+    def get_energy(self, x_hat_, y_hat_):
+        return -1.0 * self.net.logsumexp_logits(x_hat_)
 
-    def step(self, x_hat_):
+    def step(self, x_hat_, y_hat_):
         # TODO - get gradient for x wrt loss
         # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
-        energy = self.get_energy(x_hat_)
+        energy = self.get_energy(x_hat_, y_hat_)
         x_hat_grad = torch.autograd.grad(energy, x_hat_, create_graph=True)
         gradient_step = self.sgld_lr * x_hat_grad[0]
         noise = self.noise * torch.randn(x_hat_.shape)
+        # this is gradient ASCENT because we want high-probability random samples
         x_hat_ = x_hat_ + gradient_step + noise
         x_hat_[x_hat_ < min(self.replay.range)] = min(self.replay.range)
         x_hat_[x_hat_ > max(self.replay.range)] = max(self.replay.range)
         return x_hat_
 
     def __call__(self):
-        x_hat_ = self.replay.sample()
+        x_hat_, y_hat_ = self.replay.sample()
         x_hat_.requires_grad = True
         for sgld_step_num in range(self.sgld_step):
-            x_hat_ = self.step(x_hat_)
+            x_hat_ = self.step(x_hat_, y_hat_)
         x_hat_ = x_hat_.detach()
-        self.replay.append(x_hat_)
-        return x_hat_
+        self.replay.append((x_hat_, y_hat_))
+        return x_hat_, y_hat_
 
 
 class SgldClassHarness(SgldLogitHarness):
-    def get_energy(self, x_hat_):
-        y_hat_ = np.random.choice(range(10))
-        return self.net(x_hat_)[y_hat_]
+    def get_energy(self, x_hat_, y_hat_):
+        logits = self.net(x_hat_)
+        return -1.0 * logits[:, y_hat_]
 
 
-class ReplayBuffer(object):
+class ClassReplayBuffer(object):
     def __init__(
         self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05, seed=None
     ):
@@ -165,7 +196,9 @@ class ReplayBuffer(object):
             ndx = np.random.choice(range(len(self)))
             return self.buffer[ndx]
         else:
-            return TorchUnif(min(self.range), max(self.range)).sample(self.shape)
+            x_hat_ = TorchUnif(min(self.range), max(self.range)).sample(self.shape)
+            y_hat_ = np.random.choice(range(10))
+            return x_hat_, y_hat_
 
 
 class AddGaussianNoise(object):
@@ -213,28 +246,27 @@ if __name__ == "__main__":
 
     my_net = SimpleNet()
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
-    # print(my_net)
     print(f"The network has {param_ct:,} parameters.")
 
-    my_buffer = ReplayBuffer(
+    my_buffer = ClassReplayBuffer(
         data_shape=(1, 1, 28, 28),
-        data_range=(-1, 1),
+        data_range=(-1.0, 1.0),
         maxlen=10000,
-        prob_reinitialize=0.05,
+        prob_reinitialize=0.1,
     )
-    my_sgld = SgldClassHarness(
-        net=my_net, replay_buffer=my_buffer, sgld_lr=1.0, noise=1e-2, sgld_step=50
+    my_sgld = SgldLogitHarness(
+        net=my_net, replay_buffer=my_buffer, sgld_lr=1e0, noise=1e-2, sgld_step=50
     )
     xe_loss_fn = nn.CrossEntropyLoss()
+    pre_train_optim = Adam(my_net.parameters(), 3e-4)
     main_optim = Adam(my_net.parameters(), user_args.lr, weight_decay=1e-5)
-    pre_train_optim = Adam(my_net.parameters(), 1e-4)
-    writer = SummaryWriter()
 
     pre_train_buff_size = 60
     pre_train_buff = np.zeros(pre_train_buff_size)
     pre_val_buff = np.zeros(len(fashion_test))
     pre_train_counter = -1
     pointer = -1
+    writer = SummaryWriter()
     for pre_train_epoch in range(user_args.pre_epochs):
         print(f"Pre-train epoch {pre_train_epoch} of {user_args.pre_epochs}")
         for j, (x_val, y_val) in enumerate(fashion_test):
@@ -261,42 +293,46 @@ if __name__ == "__main__":
                 )
 
     print("Initializing the SGLD replay buffer")
-    for _ in range(1000):
-        my_sgld()
-    my_net.conv.requires_grad_(False)
+    grid_buff_size = 64
+    sgld_train_buff_size = grid_buff_size
+    x_hat_buff = torch.zeros((grid_buff_size, 1, 28, 28))
+    for k in range(grid_buff_size):
+        x_hat_buff[k, ...], _ = my_sgld()
+    grid = make_grid(x_hat_buff)
+    writer.add_image("JEM/x_hat", grid, 0)
+    # my_net.conv.requires_grad_(False)
 
-    sgld_train_buff_size = 100
     sgld_train_total_buff = np.zeros(sgld_train_buff_size)
     sgld_train_xe_buff = np.zeros(sgld_train_buff_size)
     sgld_train_nrg_buff = np.zeros(sgld_train_buff_size)
-    x_hat_buff = torch.zeros((100, 1, 28, 28))
     jem_counter = -1
     for epoch_num in range(user_args.n_epochs):
         print(f"SGLD-train epoch {epoch_num} of {user_args.n_epochs}")
         for i, (x_train, y_train) in enumerate(fashion_train):
             my_net.train()
-            pre_train_optim.zero_grad()
+            # pre_train_optim.zero_grad()
+            main_optim.zero_grad()
             jem_counter += x_train.size(0)
             y_logit = my_net(x_train)
             xe_loss = xe_loss_fn(y_logit, y_train)
             x_nrg = my_net.logsumexp_logits(x_train)
-            x_hat = my_sgld()
+            # x_nrg = my_net(x_train)[:, y_train]
+            x_hat, y_hat = my_sgld()
+            # x_hat_nrg = my_net(x_hat)[:, y_hat]
             x_hat_nrg = my_net.logsumexp_logits(x_hat)
             total_loss = xe_loss + x_nrg - x_hat_nrg
             total_loss.backward()
-            pre_train_optim.step()
-            # main_optim.step()
-            # main_optim.zero_grad()
+            # pre_train_optim.step()
+            main_optim.step()
             sgld_train_total_buff[i % sgld_train_buff_size] = total_loss.item()
             sgld_train_xe_buff[i % sgld_train_buff_size] = xe_loss.item()
             sgld_train_nrg_buff[i % sgld_train_buff_size] = (x_nrg - x_hat_nrg).item()
 
             x_hat_buff[i % sgld_train_buff_size, ...] = x_hat
-            grid = make_grid(x_hat_buff)
 
             writer.add_scalar("JEM/total", total_loss.item(), jem_counter)
             writer.add_scalar("JEM/xe", xe_loss.item(), jem_counter)
-            writer.add_scalar("JEM/nrg", (x_nrg - x_hat_nrg).item(), jem_counter)
+            writer.add_scalar("JEM/\u0394nrg", (x_nrg - x_hat_nrg).item(), jem_counter)
 
             if i % sgld_train_buff_size == 0 and i > 0:
                 writer.add_scalar(
@@ -304,4 +340,5 @@ if __name__ == "__main__":
                 )
                 writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar("JEM/nrg", sgld_train_nrg_buff.mean(), jem_counter)
-                writer.add_image("JEM/x_hat", grid, jem_counter)
+                x_hat_grid = make_grid(x_hat_buff)
+                writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
