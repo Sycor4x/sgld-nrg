@@ -5,7 +5,7 @@ This paper discovers that classifier networks contain an extra degree of freedom
 
 This repository implements SGLD and energy-based training for classifier networks on common toy datasets. One side-effect of SGLD training is that the classifier network itself can also be used as part of a generative MCMC mechanism. In this sense, classifier networks are also generative models.
 
-These are 64 samples from young MCMC chains at the start of training the energy model. They're blurry noisy because they are initialized from uniform random noise, and gradually refined based on the gradient of its energy wrt the image (i.e. SGLD).
+These are 64 samples from young MCMC chains at the start of training the energy model. There are some vaguely-digit-shaped blobs among the random noise. They're blurry noisy because they are initialized from uniform random noise, and only gradually refined based on the gradient of its energy wrt the image (i.e. SGLD). Further evolution and computing gradients from model trained to optimize energy will improve them.
 ![plot](./results/beginning.png)
 
 These are 64 samples from older MCMC chains. After using energy-based training for about half an epoch and evolving the chains during that time, they are recognizable as digits for the most part. Some of the images are fuzzier than others due to re-initialization to random noise.
