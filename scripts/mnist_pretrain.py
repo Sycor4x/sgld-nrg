@@ -14,13 +14,16 @@ import pathlib
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.distributions.uniform import Uniform as TorchUnif
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from torchvision.datasets import MNIST
 from torchvision.utils import make_grid
+
+from sgld_src.transform import AddGaussianNoise
+from sgld_src.networks import SimpleNet
+from sgld_src.sgld import ClassReplayBuffer, SgldLogitHarness
 
 
 def parse_args():
@@ -43,174 +46,6 @@ def parse_args():
         help="how many epochs to train the network before using SGLD",
     )
     return parser.parse_args()
-
-
-class SimpleNet(nn.Module):
-    def __init__(self):
-        super(SimpleNet, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, 4, 1),
-            # nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.Conv2d(32, 64, 4, 1),
-            # nn.BatchNorm2d(64),
-            nn.MaxPool2d(2),
-            nn.ELU(),
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(7744, 128),
-            nn.ELU(),
-            nn.Linear(128, 10),
-        )
-
-    def forward(self, x):
-        x_cnn = self.conv(x)
-        x_flat = x_cnn.flatten(1)
-        x_logit = self.fc(x_flat)
-        return x_logit
-
-    def logsumexp_logits(self, x):
-        logits = self.forward(x)
-        return torch.logsumexp(logits, dim=1)
-
-
-class ResidNet(nn.Module):
-    def __init__(self):
-        super(ResidNet, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, 4, 1),
-            # nn.BatchNorm2d(32),
-            nn.ELU(),
-            nn.Conv2d(32, 64, 4, 1),
-            # nn.BatchNorm2d(64),
-            nn.MaxPool2d(2),
-            nn.ELU(),
-        )
-        self.fc_proj = nn.Linear(7744, 128)
-        self.fc_resid = nn.Sequential(
-            # nn.BatchNorm1d(128),
-            nn.ELU(),
-            nn.Linear(128, 128),
-            nn.ELU(),
-            # nn.BatchNorm1d(128),
-            nn.Linear(128, 128),
-            nn.ELU(),
-        )
-        self.fc_clf = nn.Linear(128, 10)
-
-    def forward(self, x):
-        x_cnn = self.conv(x)
-        x_flat = x_cnn.flatten(1)
-        x_proj = self.fc_proj(x_flat)
-        x_resid = self.fc_resid(x_proj)
-        x_logit = self.fc_clf(x_resid + x_proj)
-        return x_logit
-
-    def logsumexp_logits(self, x):
-        logits = self.forward(x)
-        return torch.logsumexp(logits, dim=1)
-
-
-class SgldLogitHarness(object):
-    def __init__(
-        self, net: nn.Module, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
-    ):
-        assert isinstance(replay_buffer, ClassReplayBuffer)
-        assert isinstance(sgld_lr, float) and sgld_lr > 0.0
-        assert isinstance(sgld_step, int) and sgld_step > 0
-        assert isinstance(noise, float) and noise > 0.0
-        assert noise <= sgld_lr
-        self.net = net
-        self.sgld_lr = sgld_lr
-        self.sgld_step = sgld_step
-        self.noise = noise
-        self.replay = replay_buffer
-
-    def __len__(self):
-        return len(self.replay)
-
-    def get_energy(self, x_hat_, y_hat_):
-        return -1.0 * self.net.logsumexp_logits(x_hat_)
-
-    def step(self, x_hat_, y_hat_):
-        # TODO - get gradient for x wrt loss
-        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
-        energy = self.get_energy(x_hat_, y_hat_)
-        x_hat_grad = torch.autograd.grad(energy, x_hat_, create_graph=True)
-        gradient_step = self.sgld_lr * x_hat_grad[0]
-        noise = self.noise * torch.randn(x_hat_.shape)
-        # this is gradient ASCENT because we want high-probability random samples
-        x_hat_ = x_hat_ + gradient_step + noise
-        x_hat_[x_hat_ < min(self.replay.range)] = min(self.replay.range)
-        x_hat_[x_hat_ > max(self.replay.range)] = max(self.replay.range)
-        return x_hat_
-
-    def __call__(self):
-        x_hat_, y_hat_ = self.replay.sample()
-        x_hat_.requires_grad = True
-        for sgld_step_num in range(self.sgld_step):
-            x_hat_ = self.step(x_hat_, y_hat_)
-        x_hat_ = x_hat_.detach()
-        self.replay.append((x_hat_, y_hat_))
-        return x_hat_, y_hat_
-
-
-class SgldClassHarness(SgldLogitHarness):
-    def get_energy(self, x_hat_, y_hat_):
-        logits = self.net(x_hat_)
-        return -1.0 * logits[:, y_hat_]
-
-
-class ClassReplayBuffer(object):
-    def __init__(
-        self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05, seed=None
-    ):
-        # TODO - allow to set seed
-        assert len(data_range) == 2
-        assert data_range[0] != data_range[1]
-        assert not np.isclose(data_range[0], data_range[1])
-        assert all(isinstance(s, int) for s in data_shape)
-        assert all(s > 0 for s in data_shape)
-        assert isinstance(maxlen, int) and maxlen > 0
-        assert 0.0 <= prob_reinitialize < 1.0
-
-        self.range = data_range
-        self.shape = data_shape
-        self.buffer = []
-        self.prob_reinitialize = prob_reinitialize
-        self.maxlen = maxlen
-        self.pointer = -1
-
-    def __len__(self):
-        return len(self.buffer)
-
-    def append(self, new):
-        if len(self.buffer) < self.maxlen:
-            self.buffer.append(new)
-        else:
-            self.pointer += 1
-            self.buffer[self.pointer % self.maxlen] = new
-
-    def sample(self):
-        if 0 < len(self.buffer) and np.random.rand() < 1.0 - self.prob_reinitialize:
-            ndx = np.random.choice(range(len(self)))
-            return self.buffer[ndx]
-        else:
-            x_hat_ = TorchUnif(min(self.range), max(self.range)).sample(self.shape)
-            y_hat_ = np.random.choice(range(10))
-            return x_hat_, y_hat_
-
-
-class AddGaussianNoise(object):
-    def __init__(self, mean=0.0, std=1.0):
-        self.std = std
-        self.mean = mean
-
-    def __call__(self, t):
-        return t + torch.randn(t.size()) * self.std + self.mean
-
-    def __repr__(self):
-        return self.__class__.__name__ + f"(mean={self.mean}, std={self.std})"
 
 
 if __name__ == "__main__":

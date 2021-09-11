@@ -3,8 +3,9 @@
 # Author: David J. Elkind
 # Creation date: 2021-09-11 (year-month-day)
 
+# TODO - take the pretraining and buffer initialization out; see if it still works
 """
 """
 
-
-from __future__ import division
+if __name__ == "__main__":
+    pass
