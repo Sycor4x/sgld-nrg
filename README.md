@@ -7,4 +7,14 @@ This repository implements SGLD and energy-based training for classifier network
 
 These are 64 samples from young MCMC chains at the start of training the energy model. They're blurry noisy because they are initialized from uniform random noise, and gradually refined based on the gradient of its energy wrt the image (i.e. SGLD).
 ![plot](./results/beginning.png)
+
+These are 64 samples from older MCMC chains. After using energy-based training for about half an epoch and evolving the chains during that time, they are recognizable as digits for the most part. Some of the images are fuzzier than others due to re-initialization to random noise.
 ![plot](./results/half-epoch.png)
+
+As of this commit, the repository is solely a proof-of-concept implementation based on the details in the paper. My TODO list includes
+- creating a package with suitable objects for general use
+- implementing mini-batching for SGLD
+- improving the SGLD implementation itself for reproducibility and speed
+- improving the argparse interface to allow more fine-grained control of the model estimation
+- testing whether the models still work if we jettison the classifier-only pre-training and buffer initialization (these were implemented as a way to validate that the JEM model could actually do what we needed in the _best possible circumstances_, i.e. having a pretty good classifier off the bat to start JEM training)
+- apply JEM to problems that are harder than MNIST digits (MNIST digits is know to be an easy task for CNNs, so it's a nice place to start for proof-of-concept code).
