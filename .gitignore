@@ -1,6 +1,7 @@
 # Local stuff
 local_data/
 venv/
+venv-delivery/
 .idea/
 
 # Byte-compiled / optimized / DLL files
