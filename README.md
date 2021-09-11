@@ -11,6 +11,15 @@ These are 64 samples from young MCMC chains at the start of training the energy 
 These are 64 samples from older MCMC chains. After using energy-based training for about half an epoch and evolving the chains during that time, they are recognizable as digits for the most part. Some of the images are fuzzier than others due to re-initialization to random noise.
 ![plot](./results/half-epoch.png)
 
+These plots show the evolution of the loss:
+- `JEM/total` tracks the total loss crossentropy(y_hat, y) + E(x) - E(x_hat);
+- `JEM/nrg` tracks the energy poriton of the loss E(x) - E(x_hat);
+- `JEM/xe` tracks the classifier lostt (cross-entropy loss).
+
+This plot shows the loss of the neural network using energy-based training after the neural network has been pre-trained for 3 epochs solely as a classifier. This accounts for why the initial cross-entropy loss starts so close to 0.0, and then rises; likewise, this accounts for why the energy portion of the loss is so high: during pre-training, there was no penalty to increasing the energy of the data, for the simple reason that the energy E(x) is not measured by a classifier. An interesting development is that at a certain point, the model appears to stabilize around a total loss slightly less than 1.0, roughly evenly divided between the classifier porition and the energy portion.
+![plot](./results/loss-evolution.png)
+
+
 As of this commit, the repository is solely a proof-of-concept implementation based on the details in the paper. My TODO list includes
 - creating a package with suitable objects for general use
 - implementing mini-batching for SGLD
