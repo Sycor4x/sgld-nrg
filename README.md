@@ -30,7 +30,7 @@ This plot shows the loss of the neural network using energy-based training after
 As of this commit, the repository is solely a proof-of-concept implementation based on the details in the paper. My TODO list includes
 - creating a package with suitable objects for general use
 - implementing mini-batching for SGLD
-- improving the SGLD implementation itself for reproducibility and speed
-- improving the argparse interface to allow more fine-grained control of the model estimation
+- improving the SGLD implementation itself for reproducibility and speed (allow users to set random seed, use a `torch.Tensor` to store the buffer instead of a list)
+- improving the argparse interface to allow more fine-grained control of the model estimation (lots of things are hard-coded now)
 - testing whether the models still work if we jettison the classifier-only pre-training and buffer initialization (these were implemented as a way to validate that the JEM model could actually do what we needed in the _best possible circumstances_, i.e. having a pretty good classifier off the bat to start JEM training)
 - apply JEM to problems that are harder than MNIST digits (MNIST digits is know to be an easy task for CNNs, so it's a nice place to start for proof-of-concept code).
