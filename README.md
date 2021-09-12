@@ -11,11 +11,11 @@ This repository implements SGLD and energy-based training for classifier network
 
 These are 64 samples from young MCMC chains at the start of training the energy model. There are some vaguely-digit-shaped blobs among the random noise. They're blurry noisy because they are initialized from uniform random noise, and only gradually refined based on the gradient of its energy wrt the image (i.e. SGLD). Further evolution and computing gradients from model trained to optimize energy will improve them.
 
-![plot](./results/beginning.png)
+![plot](./results/pretrain-xhat-begin.png)
 
 These are 64 samples from older MCMC chains. After using energy-based training for about half an epoch and evolving the chains during that time, they are recognizable as digits for the most part. Some of the images are fuzzier than others due to re-initialization to random noise.
 
-![plot](./results/half-epoch.png)
+![plot](./results/pretrain-xhat-half-epoch.png)
 
 # Loss progression using pre-training
 
@@ -26,7 +26,15 @@ These plots show the evolution of the loss:
 
 This plot shows the loss of the neural network using energy-based training after the neural network has been pre-trained for 3 epochs solely as a classifier. This accounts for why the initial cross-entropy loss starts so close to 0.0, and then rises; likewise, this accounts for why the energy portion of the loss is so high: during pre-training, there was no penalty to increasing the energy of the data, for the simple reason that the energy E(x) is not measured by a classifier. An interesting development is that at a certain point, the model appears to stabilize around a total loss slightly less than 1.0, roughly evenly divided between the classifier porition and the energy portion.
 
-![plot](./results/loss-evolution.png)
+![plot](./results/pretrain-loss.png)
+
+# JEM without pre-training
+
+Without pretraining, it's challenging to interpret the total loss on its own. It almost appears as if the model is getting worse over time because the loss is increasing. This shows about 7 epochs of training with `batch_size=4`. The cross-entropy loss and accuracy abysmal until deep into the training, whereas an ordinary classification network typically tops 90% accuracy in the first few batches, and certainly by the end of the first epoch. However, we can verify that things are working by visually inspecting the resulting images sampled from the model; by 5,000 training images seen, there are recognizable image-shaped blurs among the samples. By 10,000 training images seen, the sample are look like sloppy handwritten digits. 
+
+Partially, this increasing loss pattern is because it takes many MCMC steps for SGLD to refine the generated images from noise into something that looks reasonably like a digit. Because the model is refining its conception of what a digit is alongside learning the density of the data, it is slow-going, and the loss appears to reflect the shifting priorities of the model over time, alternating between reducing the cross-entropy and reducing the energy.
+
+![plot](./results/raw-loss.png)
 
 # My TODO list
 
