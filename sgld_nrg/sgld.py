@@ -6,17 +6,17 @@
 """
 """
 
-import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributions.bernoulli import Bernoulli as TorchBernoulli
 from torch.distributions.uniform import Uniform as TorchUnif
 
 
-class SgldLogitHarness(object):
+class SgldLogitEnergy(object):
     def __init__(
         self, net: nn.Module, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
     ):
-        assert isinstance(replay_buffer, ClassReplayBuffer)
+        assert isinstance(replay_buffer, ReplayBuffer)
         assert isinstance(sgld_lr, float) and sgld_lr > 0.0
         assert isinstance(sgld_step, int) and sgld_step > 0
         assert isinstance(noise, float) and noise > 0.0
@@ -30,15 +30,21 @@ class SgldLogitHarness(object):
     def __len__(self):
         return len(self.replay)
 
-    def get_energy(self, x_hat_, y_hat_):
+    def get_energy(self, x_hat_):
         return -1.0 * self.net.logsumexp_logits(x_hat_)
 
-    def step(self, x_hat_, y_hat_):
-        # TODO - get gradient for x wrt loss
+    def step(self, x_hat_):
+        net_mode = self.net.training
+        self.net.eval()
         # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
-        energy = self.get_energy(x_hat_, y_hat_)
-        x_hat_grad = torch.autograd.grad(energy, x_hat_, create_graph=True)
-        gradient_step = self.sgld_lr * x_hat_grad[0]
+        x_hat_grad = torch.zeros_like(x_hat_)
+        for i in range(x_hat_.size(0)):
+            x_hat_i = x_hat_[i, ...].unsqueeze(0)
+            nrg = self.get_energy(x_hat_i)
+            grad_i = torch.autograd.grad(nrg, x_hat_i, create_graph=True)
+            x_hat_grad[i, ...] = grad_i[0]
+        self.net.training = net_mode
+        gradient_step = self.sgld_lr * x_hat_grad
         noise = self.noise * torch.randn(x_hat_.shape)
         # this is gradient ASCENT because we want the samples to have high probability
         x_hat_ = x_hat_ + gradient_step + noise
@@ -46,30 +52,21 @@ class SgldLogitHarness(object):
         x_hat_[x_hat_ > max(self.replay.range)] = max(self.replay.range)
         return x_hat_
 
-    def __call__(self):
-        x_hat_, y_hat_ = self.replay.sample()
+    def __call__(self, batch_size):
+        x_hat_ = self.replay.sample(batch_size)
         x_hat_.requires_grad = True
         for sgld_step_num in range(self.sgld_step):
-            x_hat_ = self.step(x_hat_, y_hat_)
+            x_hat_ = self.step(x_hat_)
         x_hat_ = x_hat_.detach()
-        self.replay.append((x_hat_, y_hat_))
-        return x_hat_, y_hat_
+        self.replay.append(x_hat_)
+        return x_hat_
 
 
-class SgldClassHarness(SgldLogitHarness):
-    def get_energy(self, x_hat_, y_hat_):
-        logits = self.net(x_hat_)
-        return -1.0 * logits[:, y_hat_]
-
-
-class ClassReplayBuffer(object):
-    def __init__(
-        self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05, seed=None
-    ):
+class ReplayBuffer(object):
+    def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         # TODO - allow to set seed
         assert len(data_range) == 2
         assert data_range[0] != data_range[1]
-        assert not np.isclose(data_range[0], data_range[1])
         assert all(isinstance(s, int) for s in data_shape)
         assert all(s > 0 for s in data_shape)
         assert isinstance(maxlen, int) and maxlen > 0
@@ -77,26 +74,35 @@ class ClassReplayBuffer(object):
 
         self.range = data_range
         self.shape = data_shape
-        self.buffer = []
-        self.prob_reinitialize = prob_reinitialize
+        self.buffer = torch.zeros((maxlen, *data_shape))
+        self.prob_reinit = prob_reinitialize
         self.maxlen = maxlen
-        self.pointer = -1
+        self.pointer = 0
+        self.length = 0
 
     def __len__(self):
-        return len(self.buffer)
+        return self.length
 
     def append(self, new):
-        if len(self.buffer) < self.maxlen:
-            self.buffer.append(new)
-        else:
-            self.pointer += 1
-            self.buffer[self.pointer % self.maxlen] = new
+        into = torch.arange(0, new.size(0), dtype=torch.long) + self.pointer
+        into %= self.maxlen
+        self.buffer[into, ...] = new
+        self.pointer += new.size(0)
+        self.pointer %= self.maxlen
+        self.length = min(self.maxlen, self.length + new.size(0))
 
-    def sample(self):
-        if 0 < len(self.buffer) and np.random.rand() < 1.0 - self.prob_reinitialize:
-            ndx = np.random.choice(range(len(self)))
-            return self.buffer[ndx]
+    def sample(self, batch):
+        assert isinstance(batch, int)
+        assert batch < self.maxlen
+        if 0 < self.length:
+            ndx = torch.randint(len(self), size=(batch,))
+            out = self.buffer[ndx, ...]
+            mask = TorchBernoulli(probs=self.prob_reinit).sample((batch,))
+            out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+            return out
         else:
-            x_hat_ = TorchUnif(min(self.range), max(self.range)).sample(self.shape)
-            y_hat_ = np.random.choice(range(10))
-            return x_hat_, y_hat_
+            return self.initialize(batch)
+
+    def initialize(self, n):
+        x_hat_ = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
+        return x_hat_

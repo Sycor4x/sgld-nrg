@@ -15,12 +15,13 @@ class SimpleNet(nn.Module):
             # nn.BatchNorm2d(32),
             nn.ELU(),
             nn.Conv2d(32, 64, 4, 1),
-            # nn.BatchNorm2d(64),
             nn.MaxPool2d(2),
-            nn.ELU(),
         )
         self.fc = nn.Sequential(
+            # nn.BatchNorm2d(64),
+            nn.ELU(),
             nn.Linear(7744, 128),
+            # nn.BatchNorm1d(128),
             nn.ELU(),
             nn.Linear(128, 10),
         )
@@ -45,9 +46,8 @@ class ResidNet(nn.Module):
             # nn.BatchNorm2d(32),
             nn.ELU(),
             nn.Conv2d(32, 64, 4, 1),
-            # nn.BatchNorm2d(64),
             nn.MaxPool2d(2),
-            nn.ELU(),
+            # nn.BatchNorm2d(64),
         )
         self.fc_proj = nn.Linear(7744, 128)
         self.fc_resid = nn.Sequential(
@@ -57,7 +57,6 @@ class ResidNet(nn.Module):
             nn.ELU(),
             # nn.BatchNorm1d(128),
             nn.Linear(128, 128),
-            nn.ELU(),
         )
         self.fc_clf = nn.Linear(128, 10)
 
