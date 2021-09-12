@@ -18,7 +18,7 @@ class SimpleNet(nn.Module):
             nn.MaxPool2d(2),
         )
         self.fc = nn.Sequential(
-            # nn.BatchNorm2d(64),
+            # nn.BatchNorm1d(7744),
             nn.ELU(),
             nn.Linear(7744, 128),
             # nn.BatchNorm1d(128),

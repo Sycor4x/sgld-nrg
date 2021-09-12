@@ -33,17 +33,21 @@ class SgldLogitEnergy(object):
     def get_energy(self, x_hat_):
         return -1.0 * self.net.logsumexp_logits(x_hat_)
 
-    def step(self, x_hat_):
+    def get_grad(self, x_hat_):
         net_mode = self.net.training
         self.net.eval()
         # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
         x_hat_grad = torch.zeros_like(x_hat_)
-        for i in range(x_hat_.size(0)):
-            x_hat_i = x_hat_[i, ...].unsqueeze(0)
-            nrg = self.get_energy(x_hat_i)
-            grad_i = torch.autograd.grad(nrg, x_hat_i, create_graph=True)
-            x_hat_grad[i, ...] = grad_i[0]
+        for j in range(x_hat_.size(0)):
+            x_hat_j = x_hat_[j, ...].unsqueeze(0)
+            nrg = self.get_energy(x_hat_j)
+            grad_j = torch.autograd.grad(nrg, x_hat_j, create_graph=True)
+            x_hat_grad[j, ...] = grad_j[0]
         self.net.training = net_mode
+        return x_hat_grad
+
+    def step(self, x_hat_):
+        x_hat_grad = self.get_grad(x_hat_)
         gradient_step = self.sgld_lr * x_hat_grad
         noise = self.noise * torch.randn(x_hat_.shape)
         # this is gradient ASCENT because we want the samples to have high probability
