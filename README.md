@@ -32,9 +32,12 @@ This plot shows the loss of the neural network using energy-based training after
 
 Without pretraining, it's challenging to interpret the total loss on its own. It almost appears as if the model is getting worse over time because the loss is increasing. This shows about 7 epochs of training with `batch_size=4`. The cross-entropy loss and accuracy abysmal until deep into the training, whereas an ordinary classification network typically tops 90% accuracy in the first few batches, and certainly by the end of the first epoch. However, we can verify that things are working by visually inspecting the resulting images sampled from the model; by 5,000 training images seen, there are recognizable image-shaped blurs among the samples. By 10,000 training images seen, the sample are look like sloppy handwritten digits. 
 
-Partially, this increasing loss pattern is because it takes many MCMC steps for SGLD to refine the generated images from noise into something that looks reasonably like a digit. Because the model is refining its conception of what a digit is alongside learning the density of the data, it is slow-going, and the loss appears to reflect the shifting priorities of the model over time, alternating between reducing the cross-entropy and reducing the energy.
-
 ![plot](./results/raw-loss.png)
+
+Partially, this increasing loss pattern is because it takes many MCMC steps for SGLD to refine the generated images from noise into something that looks reasonably like a digit. Because the model is refining its conception of what a digit is alongside learning the density of the data, it is slow-going, and the loss appears to reflect the shifting priorities of the model over time, alternating between reducing the cross-entropy and reducing the energy. This zoomed-in view of early training makes this effect clearer: for a long duration, the cross-entropy loss is barely improving for the first 25,000 samples seen, while the total loss is **increasing**, and the accuracy is struggling to beat 70%.
+
+![plot](./results/raw-loss-zoom.png)
+
 
 # My TODO list
 
