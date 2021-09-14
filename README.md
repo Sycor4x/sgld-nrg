@@ -34,7 +34,7 @@ Without pretraining, it's challenging to interpret the total loss on its own. It
 
 ![plot](./results/raw-loss.png)
 
-Partially, this increasing loss pattern is because it takes many MCMC steps for SGLD to refine the generated images from noise into something that looks reasonably like a digit. Because the model is refining its conception of what a digit is alongside learning the density of the data, it is slow-going, and the loss appears to reflect the shifting priorities of the model over time, alternating between reducing the cross-entropy and reducing the energy. This zoomed-in view of early training makes this effect clearer: for a long duration, the cross-entropy loss is barely improving for the first 25,000 samples seen, while the total loss is **increasing**, and the accuracy is struggling to beat 70%.
+Partially, this increasing loss pattern is because it takes many MCMC steps for SGLD to refine the generated images from noise into something that looks reasonably like a digit. Because the model is refining its conception of what a digit is alongside learning the density of the data, it is slow-going, and the loss appears to reflect the shifting priorities of the model over time, alternating between reducing the cross-entropy and reducing the energy. This zoomed-in view of early training makes this effect clearer: for a long duration, the cross-entropy loss is barely improving for the first 25,000 samples seen, while the total loss is **increasing**, and the accuracy is struggling to beat 70%. Nonetheless, the model actually is learning, which we can verify by qualitatively inspecting the sampled images.
 
 ![plot](./results/raw-loss-zoom.png)
 
