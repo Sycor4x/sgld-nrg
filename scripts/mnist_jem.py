@@ -10,19 +10,22 @@ Implements Stochastic gradient Langevin dynamics for energy-based models, as per
 
 import argparse
 import pathlib
-import torch
+
 import numpy as np
+import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torchsummary import summary as torch_summary
 from torchvision import transforms
-from torchvision.datasets import MNIST, FashionMNIST
+from torchvision.datasets import FashionMNIST, MNIST
 from torchvision.utils import make_grid
 
-from sgld_nrg.transform import AddGaussianNoise
-from sgld_nrg.networks import SimpleNet, ResidNet
+from sgld_nrg.networks import Resnet, SimpleNet
 from sgld_nrg.sgld import ReplayBuffer, SgldLogitEnergy
+from sgld_nrg.transform import AddGaussianNoise
+
 
 
 def nonnegative_int(value):
@@ -59,6 +62,12 @@ def parse_args():
         default=0.03,
         type=positive_float,
         help="the magnitude of 0-mean Gaussian noise applied to the MNIST images in each minibatch",
+    )
+    parser.add_argument(
+        "--network",
+        default="residual",
+        choices=["simple", "residual"],
+        help="which neural network architecture to use for training; see networks.py",
     )
     parser.add_argument(
         "--sgld_lr",
@@ -173,8 +182,16 @@ if __name__ == "__main__":
     )
     test = DataLoader(test, batch_size=1000, shuffle=True)
 
-    # my_net = SimpleNet()
-    my_net = ResidNet()
+    if user_args.network == "simple":
+        my_net = SimpleNet()
+    elif user_args.network == "residual":
+        my_net = Resnet()
+    else:
+        raise ValueError(
+            f"User argument to `--network` not recognized: {user_args.network}"
+        )
+
+    torch_summary(my_net, (1, 28, 28))
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
     print(f"The network has {param_ct:,} parameters.")
 
@@ -253,7 +270,7 @@ if __name__ == "__main__":
                 "Pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter
             )
 
-    sgld_train_buff = 4
+    sgld_train_buff = max(1, int(1024 / user_args.batch_size + 0.5))
     sgld_train_total_buff = np.zeros(sgld_train_buff)
     sgld_train_xe_buff = np.zeros(sgld_train_buff)
     sgld_train_nrg_buff = np.zeros(sgld_train_buff)
@@ -283,6 +300,7 @@ if __name__ == "__main__":
             sgld_train_acc_buff[i % sgld_train_buff] = get_accuracy(y_logit, y_train)
 
             if i % sgld_train_buff == 0:
+                print(f"Batch {i} of {len(train)}")
                 x_hat_grid = make_grid(
                     x_hat, nrow=min(8, int(np.sqrt(user_args.batch_size)))
                 )
