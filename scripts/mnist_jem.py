@@ -4,7 +4,8 @@
 # Creation date: 2021-09-07 (year-month-day)
 
 """
-Implements Stochastic gradient Langevin dynamics for energy-based models, as per https://arxiv.org/pdf/1912.03263.pdf
+Implements Stochastic gradient Langevin dynamics for energy-based models,
+as per https://arxiv.org/pdf/1912.03263.pdf
 """
 
 
@@ -57,10 +58,16 @@ def positive_float(value):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--translate",
+        default=2,
+        type=nonnegative_int,
+        help="randomly translates the image but up to this many pixels; set to 0 to disable",
+    )
+    parser.add_argument(
         "--input_noise",
         default=0.03,
         type=positive_float,
-        help="the magnitude of 0-mean Gaussian noise applied to the MNIST images in each minibatch",
+        help="the magnitude of 0-mean Gaussian noise applied to the MNIST images in each minibatch; set to 0 to disable",
     )
     parser.add_argument(
         "--network",
@@ -147,13 +154,20 @@ if __name__ == "__main__":
         transforms.Normalize((normalize_center,), (normalize_scale,)),
     ]
     scale_xform = transforms.Compose(scale_list)
-    augmentation_xform_list = scale_list.copy()
-    augmentation_xform_list += [
-        transforms.RandomCrop((28, 28), padding=(2, 2), fill=0, padding_mode="edge")
-    ]
+    augmentation_xform_list = []
+    if user_args.translate > 0:
+        augmentation_xform_list += [
+            transforms.RandomCrop(
+                (28, 28),
+                padding=(user_args.translate, user_args.translate),
+                fill=0,
+                padding_mode="edge",
+            )
+        ]
     if user_args.input_noise > 0.0:
         augmentation_xform_list += [AddGaussianNoise(std=user_args.input_noise)]
-    augmentation_xform = transforms.Compose(augmentation_xform_list)
+    augmentation_xform = transforms.Compose(scale_list + augmentation_xform_list)
+    print(f"We are using these transforms:\n{augmentation_xform}")
     if user_args.fashion:
         train = FashionMNIST(
             dest_dir,
@@ -308,7 +322,7 @@ if __name__ == "__main__":
                 x_hat_grid = make_grid(
                     normalize_scale * x_hat + normalize_center,
                     nrow=min(8, int(np.sqrt(user_args.batch_size))),
-                )  # reverse the scaling appplied earlier
+                )  # reverse the scaling applied earlier for display purposes
                 writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
                 writer.add_scalar("JEM/total", total_loss.item(), jem_counter)
                 writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
