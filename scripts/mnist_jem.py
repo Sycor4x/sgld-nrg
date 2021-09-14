@@ -21,7 +21,7 @@ from torchvision.datasets import MNIST, FashionMNIST
 from torchvision.utils import make_grid
 
 from sgld_nrg.transform import AddGaussianNoise
-from sgld_nrg.networks import SimpleNet
+from sgld_nrg.networks import SimpleNet, ResidNet
 from sgld_nrg.sgld import ReplayBuffer, SgldLogitEnergy
 
 
@@ -54,6 +54,12 @@ def positive_float(value):
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--input_noise",
+        default=0.03,
+        type=positive_float,
+        help="the magnitude of 0-mean Gaussian noise applied to the MNIST images in each minibatch",
+    )
     parser.add_argument(
         "--sgld_lr",
         default=1.0,
@@ -104,15 +110,15 @@ def parse_args():
         "-e",
         "--n_epochs",
         default=10,
-        type=positive_int,
-        help="number of epochs of training",
+        type=nonnegative_int,
+        help="number of epochs of SGLD training",
     )
     parser.add_argument(
         "-p",
         "--pre_epochs",
-        default=1,
+        default=0,
         type=nonnegative_int,
-        help="how many epochs to train the network before using SGLD",
+        help="how many epochs to train the network as an ordinary classifier before using SGLD",
     )
     return parser.parse_args()
 
@@ -128,7 +134,10 @@ if __name__ == "__main__":
     dest_dir = pathlib.Path("local_data")
     scale_list = [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
     scale_xform = transforms.Compose(scale_list)
-    augmentation_xform = transforms.Compose(scale_list + [AddGaussianNoise(std=0.03)])
+    augmentation_xform_list = scale_list.copy()
+    if user_args.input_noise > 0.0:
+        augmentation_xform_list += [AddGaussianNoise(std=user_args.input_noise)]
+    augmentation_xform = transforms.Compose(augmentation_xform_list)
     if user_args.fashion:
         train = FashionMNIST(
             dest_dir,
@@ -164,7 +173,8 @@ if __name__ == "__main__":
     )
     test = DataLoader(test, batch_size=1000, shuffle=True)
 
-    my_net = SimpleNet()
+    # my_net = SimpleNet()
+    my_net = ResidNet()
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
     print(f"The network has {param_ct:,} parameters.")
 
@@ -185,11 +195,13 @@ if __name__ == "__main__":
     pre_train_optim = Adam(my_net.parameters(), 3.0 * user_args.lr)
     main_optim = Adam(my_net.parameters(), user_args.lr)
 
-    pre_train_buff_size = 8
+    pre_train_buff_size = max(1, int(1024 / user_args.batch_size + 0.5))
     pre_train_buff_xe = np.zeros(pre_train_buff_size)
     pre_train_buff_acc = np.zeros(pre_train_buff_size)
+    pre_train_buff_pnrg = np.zeros(pre_train_buff_size)
     pre_val_buff = np.zeros(len(test))
     pre_val_buff_acc = np.zeros(len(test))
+    pre_val_buff_pnrg = np.zeros(len(test))
     pre_train_counter = 0
     pointer = 0
     writer = SummaryWriter()
@@ -202,31 +214,44 @@ if __name__ == "__main__":
             y_logit = my_net(x_train)
             xe_loss = xe_loss_fn(y_logit, y_train)
             xe_loss.backward()
+            pnrg = my_net.logsumexp_logits(x_train).mean()
             pre_train_optim.step()
             pre_train_buff_acc[pointer % pre_train_buff_size] = get_accuracy(
                 y_logit, y_train
             )
             pre_train_buff_xe[pointer % pre_train_buff_size] = xe_loss.item()
+            pre_train_buff_pnrg[pointer % pre_train_buff_size] = pnrg
             pointer += 1
             if i % pre_train_buff_size == 0 and i > 0:
                 writer.add_scalar(
-                    "Pre/train/accuracy", pre_train_buff_acc.mean(), pre_train_counter
+                    "Pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
                 )
                 writer.add_scalar(
-                    "Pre/train/xe_loss_train",
+                    "Pre/xe_loss/train",
                     pre_train_buff_xe.mean(),
                     pre_train_counter,
                 )
+                writer.add_scalar(
+                    "Pre/+nrg/train", pre_train_buff_pnrg.mean(), pre_train_counter
+                )
+                for name, weight in my_net.named_parameters():
+                    writer.add_histogram(f"param/{name}", weight, pre_train_counter)
+                    writer.add_histogram(f"grad/{name}", weight.grad, pre_train_counter)
+
         for j, (x_val, y_val) in enumerate(test):
             my_net.eval()
             y_logit = my_net(x_val)
             xe_loss = xe_loss_fn(y_logit, y_val)
             pre_val_buff[j] = xe_loss.item()
             pre_val_buff_acc[j] = get_accuracy(y_logit, y_val)
+            pre_val_buff_pnrg[j] = my_net.logsumexp_logits(x_val).mean()
             writer.add_scalar(
-                "Pre/val/accuracy", pre_val_buff_acc.mean(), pre_train_counter
+                "Pre/accuracy/val", pre_val_buff_acc.mean(), pre_train_counter
             )
-            writer.add_scalar("Pre/val/xe_loss", pre_val_buff.mean(), pre_train_counter)
+            writer.add_scalar("Pre/xe_loss/val", pre_val_buff.mean(), pre_train_counter)
+            writer.add_scalar(
+                "Pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter
+            )
 
     sgld_train_buff = 4
     sgld_train_total_buff = np.zeros(sgld_train_buff)
