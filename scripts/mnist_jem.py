@@ -47,19 +47,38 @@ def positive_int(value):
 
 
 def positive_float(value):
-    ivalue = float(value)
-    if ivalue <= 0:
+    fvalue = float(value)
+    if fvalue <= 0.0:
         raise argparse.ArgumentTypeError(
             f"provided value {value} is not a positive float"
         )
-    return ivalue
+    return fvalue
+
+
+def nonnegative_float(value):
+    fvalue = float(value)
+    if fvalue < 0.0:
+        raise argparse.ArgumentTypeError(f"provided value {value} is a negative float")
+    return fvalue
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--translate",
+        "--pretrain_energy_penalty",
+        default=0.0,
+        type=nonnegative_float,
+        help="how much to penalize the pre-training model using the energy; set to 0.0 (default) to disable",
+    )
+    parser.add_argument(
+        "--num_workers",
         default=2,
+        type=nonnegative_int,
+        help="number of processes to spawn for DataLoader",
+    )
+    parser.add_argument(
+        "--translate",
+        default=0,
         type=nonnegative_int,
         help="randomly translates the image but up to this many pixels; set to 0 to disable",
     )
@@ -199,9 +218,19 @@ if __name__ == "__main__":
             download=True,
         )
     train = DataLoader(
-        train, batch_size=user_args.batch_size, shuffle=True, drop_last=True
+        train,
+        batch_size=user_args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=user_args.num_workers,
     )
-    test = DataLoader(test, batch_size=1000, shuffle=True)
+    test = DataLoader(
+        test,
+        batch_size=1000,
+        shuffle=True,
+        drop_last=False,
+        num_workers=user_args.num_workers,
+    )
 
     if user_args.network == "simple":
         my_net = SimpleNet()
@@ -230,7 +259,7 @@ if __name__ == "__main__":
         sgld_step=user_args.sgld_steps,
     )
     xe_loss_fn = nn.CrossEntropyLoss(reduction="mean")
-    pre_train_optim = Adam(my_net.parameters(), 3.0 * user_args.lr)
+    pre_train_optim = Adam(my_net.parameters(), user_args.lr)
     main_optim = Adam(my_net.parameters(), user_args.lr)
 
     pre_train_buff_size = max(1, int(512 / user_args.batch_size + 0.5))
@@ -248,12 +277,13 @@ if __name__ == "__main__":
         for i, (x_train, y_train) in enumerate(train):
             my_net.train()
             pre_train_counter += x_train.size(0)
-            pre_train_optim.zero_grad()
             y_logit = my_net(x_train)
             xe_loss = xe_loss_fn(y_logit, y_train)
-            xe_loss.backward()
             pnrg = my_net.logsumexp_logits(x_train).mean()
+            total_loss = xe_loss + user_args.pretrain_energy_penalty * pnrg
+            total_loss.backward()
             pre_train_optim.step()
+            pre_train_optim.zero_grad()
             pre_train_buff_acc[pointer % pre_train_buff_size] = get_accuracy(
                 y_logit, y_train
             )
@@ -262,12 +292,20 @@ if __name__ == "__main__":
             pointer += 1
             if i % pre_train_buff_size == 0 and i > 0:
                 writer.add_scalar(
-                    "Pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
+                    "pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
                 )
                 writer.add_scalar(
-                    "Pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
+                    "pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
                 )
-                writer.add_scalar("+nrg", pre_train_buff_pnrg.mean(), pre_train_counter)
+                writer.add_scalar(
+                    "combined/accuracy", pre_train_buff_acc.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/xe", pre_train_buff_xe.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/+nrg", pre_train_buff_pnrg.mean(), pre_train_counter
+                )
                 for name, weight in my_net.named_parameters():
                     writer.add_histogram(f"param/{name}", weight, pre_train_counter)
                     writer.add_histogram(f"grad/{name}", weight.grad, pre_train_counter)
@@ -279,13 +317,11 @@ if __name__ == "__main__":
             pre_val_buff[j] = xe_loss.item()
             pre_val_buff_acc[j] = get_accuracy(y_logit, y_val)
             pre_val_buff_pnrg[j] = my_net.logsumexp_logits(x_val).mean()
-            writer.add_scalar(
-                "Pre/accuracy/val", pre_val_buff_acc.mean(), pre_train_counter
-            )
-            writer.add_scalar("Pre/xe_loss/val", pre_val_buff.mean(), pre_train_counter)
-            writer.add_scalar(
-                "Pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter
-            )
+        writer.add_scalar(
+            "pre/accuracy/val", pre_val_buff_acc.mean(), pre_train_counter
+        )
+        writer.add_scalar("pre/xe_loss/val", pre_val_buff.mean(), pre_train_counter)
+        writer.add_scalar("pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter)
 
     sgld_train_buff = max(1, int(512 / user_args.batch_size + 0.5))
     sgld_train_total_buff = np.zeros(sgld_train_buff)
@@ -299,7 +335,6 @@ if __name__ == "__main__":
         print(f"SGLD-train epoch {epoch_num} of {user_args.n_epochs}")
         for i, (x_train, y_train) in enumerate(train):
             my_net.train()
-            main_optim.zero_grad()
             jem_counter += x_train.size(0)
             y_logit = my_net(x_train)
             xe_loss = xe_loss_fn(y_logit, y_train)
@@ -309,6 +344,7 @@ if __name__ == "__main__":
             total_loss = xe_loss + x_nrg - x_hat_nrg
             total_loss.backward()
             main_optim.step()
+            main_optim.zero_grad()
             train_acc = get_accuracy(y_logit, y_train)
             sgld_train_total_buff[i % sgld_train_buff] = total_loss.item()
             sgld_train_xe_buff[i % sgld_train_buff] = xe_loss.item()
@@ -320,7 +356,7 @@ if __name__ == "__main__":
             if i % sgld_train_buff == 0:
                 print(f"\tBatch {i} of {len(train)}")
                 x_hat_grid = make_grid(
-                    normalize_scale * x_hat + normalize_center,
+                    x_hat * normalize_scale + normalize_center,
                     nrow=min(8, int(np.sqrt(user_args.batch_size))),
                 )  # reverse the scaling applied earlier for display purposes
                 writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
@@ -328,12 +364,15 @@ if __name__ == "__main__":
                 writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar("JEM/\u0394nrg", xe_loss.item(), jem_counter)
                 writer.add_scalar("JEM/+nrg", x_nrg.item(), jem_counter)
-                writer.add_scalar("+nrg", x_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/-nrg", x_hat_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/accuracy", train_acc, jem_counter)
                 for name, weight in my_net.named_parameters():
-                    writer.add_histogram(f"param/{name}", weight, pre_train_counter)
-                    writer.add_histogram(f"grad/{name}", weight.grad, pre_train_counter)
+                    writer.add_histogram(
+                        f"param/{name}", weight, jem_counter + pre_train_counter
+                    )
+                    writer.add_histogram(
+                        f"grad/{name}", weight.grad, jem_counter + pre_train_counter
+                    )
 
             if i > 0 and i % sgld_train_buff == 0:
                 writer.add_scalar(
@@ -343,9 +382,20 @@ if __name__ == "__main__":
                 writer.add_scalar(
                     "JEM/\u0394nrg", sgld_train_nrg_buff.mean(), jem_counter
                 )
+                writer.add_scalar(
+                    "combined/+nrg", x_nrg.item(), jem_counter + pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/xe",
+                    sgld_train_xe_buff.mean(),
+                    jem_counter + pre_train_counter,
+                )
+                writer.add_scalar(
+                    "combined/accuracy", train_acc, jem_counter + pre_train_counter
+                )
                 writer.add_scalar("JEM/+nrg", sgld_train_pnrg_buff.mean(), jem_counter)
-                writer.add_scalar("+nrg", sgld_train_pnrg_buff.mean(), jem_counter)
                 writer.add_scalar("JEM/-nrg", sgld_train_nnrg_buff.mean(), jem_counter)
                 writer.add_scalar(
                     "JEM/accuracy", sgld_train_acc_buff.mean(), jem_counter
                 )
+    writer.close()
