@@ -11,6 +11,9 @@ import torch.nn as nn
 from torch.distributions.bernoulli import Bernoulli as TorchBernoulli
 from torch.distributions.uniform import Uniform as TorchUnif
 
+# TODO - change the buffer behavior: initialize the whole tensor as random, then sample form it
+# Also, test a method that always replaces the SGLD result in the same "slot" in the buffer (so we have 10k independent chains)
+
 
 class SgldLogitEnergy(object):
     def __init__(
@@ -78,14 +81,10 @@ class ReplayBuffer(object):
 
         self.range = data_range
         self.shape = data_shape
-        self.buffer = torch.zeros((maxlen, *data_shape))
         self.prob_reinit = prob_reinitialize
         self.maxlen = maxlen
         self.pointer = 0
-        self.length = 0
-
-    def __len__(self):
-        return self.length
+        self.buffer = self.initialize(maxlen)
 
     def append(self, new):
         into = torch.arange(0, new.size(0), dtype=torch.long) + self.pointer
@@ -93,20 +92,53 @@ class ReplayBuffer(object):
         self.buffer[into, ...] = new
         self.pointer += new.size(0)
         self.pointer %= self.maxlen
-        self.length = min(self.maxlen, self.length + new.size(0))
 
-    def sample(self, batch):
-        assert isinstance(batch, int)
-        assert batch < self.maxlen
-        if 0 < self.length:
-            ndx = torch.randint(len(self), size=(batch,))
-            out = self.buffer[ndx, ...]
-            mask = TorchBernoulli(probs=self.prob_reinit).sample((batch,))
-            out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
-            return out
-        else:
-            return self.initialize(batch)
+    def sample(self, batch_size):
+        assert isinstance(batch_size, int)
+        assert batch_size < self.maxlen
+        ndx = torch.randint(self.maxlen, size=(batch_size,))
+        out = self.buffer[ndx, ...]
+        mask = TorchBernoulli(probs=self.prob_reinit).sample((batch_size,))
+        out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+        return out
 
     def initialize(self, n):
         x_hat_ = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
         return x_hat_
+
+
+class IndependentReplayBuffer(ReplayBuffer):
+    def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
+        """
+        The other replay buffer ReplayBuffer refreshes elements on a circular cadence;
+        This buffer only samples from index i and replaces into index i -- in other words,
+        each chain evolves independently.
+        """
+        super(IndependentReplayBuffer, self).__init__(
+            data_shape=data_shape,
+            data_range=data_range,
+            maxlen=maxlen,
+            prob_reinitialize=prob_reinitialize,
+        )
+        self.latest_ndx = None
+
+    def append(self, new):
+        if new.size(0) == self.latest_ndx.numel():
+            into = self.latest_ndx
+        else:
+            raise ValueError(
+                f"cannot append `new` with shape {new.size} using latest_ndx with shape {self.latest_ndx}"
+            )
+        self.buffer[into, ...] = new
+
+    def sample(self, batch_size):
+        assert isinstance(batch_size, int)
+        assert batch_size < self.maxlen
+        self.latest_ndx = self.rand_index(batch_size)
+        out = self.buffer[self.latest_ndx, ...]
+        mask = TorchBernoulli(probs=self.prob_reinit).sample((batch_size,))
+        out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+        return out
+
+    def rand_index(self, batch_size):
+        return torch.randint(self.maxlen, size=(batch_size,))
