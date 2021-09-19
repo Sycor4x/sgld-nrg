@@ -37,7 +37,7 @@ class SgldLogitEnergy(object):
         # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
         net_mode = self.net.training
         self.net.eval()
-        x_hat_split = torch.tensor_split(x_hat_, x_hat_.size(0))
+        x_hat_split = torch.split(x_hat_, 0)
         nrg_split = (self.get_energy(x) for x in x_hat_split)
         grad_j = torch.autograd.grad(nrg_split, x_hat_split, create_graph=False)
         x_hat_grad = torch.stack(grad_j, 0).squeeze(1)
