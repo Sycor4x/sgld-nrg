@@ -39,10 +39,7 @@ class SgldLogitEnergy(object):
         self.net.eval()
         x_hat_split = torch.tensor_split(x_hat_, x_hat_.size(0))
         nrg_split = (self.get_energy(x) for x in x_hat_split)
-        # print(nrg.shape)
-        # nrg_split = torch.tensor_split(nrg,nrg.numel())
-        # print(nrg_split[0].shape)
-        grad_j = torch.autograd.grad(nrg_split, x_hat_split, create_graph=True)
+        grad_j = torch.autograd.grad(nrg_split, x_hat_split, create_graph=False)
         x_hat_grad = torch.stack(grad_j, 0).squeeze(1)
         self.net.training = net_mode
         return x_hat_grad
