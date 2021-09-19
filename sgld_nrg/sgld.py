@@ -27,16 +27,14 @@ class SgldLogitEnergy(object):
         self.noise = noise
         self.replay = replay_buffer
 
-    def __len__(self):
-        return len(self.replay)
-
     def get_energy(self, x_hat_):
         return -1.0 * self.net.logsumexp_logits(x_hat_)
 
-    def get_grad(self, x_hat_):
+    def get_direction(self, x_hat_):
+        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
+        # TODO - reimplement this to do batching, and avoid the python loop
         net_mode = self.net.training
         self.net.eval()
-        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
         x_hat_grad = torch.zeros_like(x_hat_)
         for j in range(x_hat_.size(0)):
             x_hat_j = x_hat_[j, ...].unsqueeze(0)
@@ -47,7 +45,7 @@ class SgldLogitEnergy(object):
         return x_hat_grad
 
     def step(self, x_hat_):
-        x_hat_grad = self.get_grad(x_hat_)
+        x_hat_grad = self.get_direction(x_hat_)
         gradient_step = self.sgld_lr * x_hat_grad
         noise = self.noise * torch.randn(x_hat_.shape)
         # this is gradient ASCENT because we want the samples to have high probability
@@ -64,6 +62,29 @@ class SgldLogitEnergy(object):
         x_hat_ = x_hat_.detach()
         self.replay.append(x_hat_)
         return x_hat_
+
+
+class NewtonSgldLogitEnergy(SgldLogitEnergy):
+    def get_energy(self, x_hat_flat):
+        x_hat_ = x_hat_flat.reshape(1,1,28,28)
+        return -1.0 * self.net.logsumexp_logits(x_hat_)
+
+    def get_direction(self, x_hat_):
+        # TODO - implement a new class that uses Jacobean or Hessian updates
+        net_mode = self.net.training
+        self.net.eval()
+        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
+        x_hat_grad = torch.zeros_like(x_hat_)
+        for j in range(x_hat_.size(0)):
+            x_hat_j = x_hat_[j, ...].flatten()
+            hess_j = torch.autograd.functional.hessian(lambda z: self.get_energy(z), inputs=x_hat_j, create_graph=False)
+            nrg = self.get_energy(x_hat_j)
+            grad_j = torch.autograd.grad(nrg, x_hat_j, create_graph=False)
+            H_inv_nabla = torch.linalg.solve(hess_j, grad_j[0])
+            x_hat_grad[j, ...] = H_inv_nabla.reshape(1,28,28)
+        self.net.training = net_mode
+        asdf
+        return x_hat_grad
 
 
 class ReplayBuffer(object):
