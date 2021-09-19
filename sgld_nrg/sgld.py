@@ -34,15 +34,16 @@ class SgldLogitEnergy(object):
         return -1.0 * self.net.logsumexp_logits(x_hat_)
 
     def get_grad(self, x_hat_):
+        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
         net_mode = self.net.training
         self.net.eval()
-        # https://discuss.pytorch.org/t/newbie-getting-the-gradient-with-respect-to-the-input/12709/7
-        x_hat_grad = torch.zeros_like(x_hat_)
-        for j in range(x_hat_.size(0)):
-            x_hat_j = x_hat_[j, ...].unsqueeze(0)
-            nrg = self.get_energy(x_hat_j)
-            grad_j = torch.autograd.grad(nrg, x_hat_j, create_graph=True)
-            x_hat_grad[j, ...] = grad_j[0]
+        x_hat_split = torch.tensor_split(x_hat_, x_hat_.size(0))
+        nrg_split = (self.get_energy(x) for x in x_hat_split)
+        # print(nrg.shape)
+        # nrg_split = torch.tensor_split(nrg,nrg.numel())
+        # print(nrg_split[0].shape)
+        grad_j = torch.autograd.grad(nrg_split, x_hat_split, create_graph=True)
+        x_hat_grad = torch.stack(grad_j, 0).squeeze(1)
         self.net.training = net_mode
         return x_hat_grad
 
