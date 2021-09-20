@@ -25,7 +25,7 @@ from torchvision.datasets import FashionMNIST, MNIST
 from torchvision.utils import make_grid
 
 from sgld_nrg.networks import Resnet, SimpleNet
-from sgld_nrg.sgld import ReplayBuffer, SgldLogitEnergy
+from sgld_nrg.sgld import IndependentReplayBuffer, SgldLogitEnergy
 from sgld_nrg.transform import AddGaussianNoise
 
 
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     print(f"The network has {param_ct:,} parameters.")
 
     # TODO - try using the IndependentReplayBuffer
-    my_buffer = ReplayBuffer(
+    my_buffer = IndependentReplayBuffer(
         data_shape=(1, 28, 28),
         data_range=(-1.0, 1.0),
         maxlen=user_args.replay_buff,
