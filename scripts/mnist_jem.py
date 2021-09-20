@@ -302,7 +302,9 @@ if __name__ == "__main__":
                 writer.add_scalar(
                     "pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
                 )
-                elapsed = datetime.datetime.now() - start_time
+                elapsed = (datetime.datetime.now() - start_time) / datetime.timedelta(
+                    seconds=1
+                )
                 writer.add_scalar(
                     "combined/seconds_per_instance",
                     elapsed / ((i + 1) * user_args.batch_size),
@@ -378,6 +380,14 @@ if __name__ == "__main__":
                 writer.add_scalar("JEM/+nrg", x_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/-nrg", x_hat_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/accuracy", train_acc, jem_counter)
+                elapsed = (datetime.datetime.now() - start_time) / datetime.timedelta(
+                    seconds=1
+                )
+                writer.add_scalar(
+                    "combined/seconds_per_instance",
+                    elapsed / ((i + 1) * user_args.batch_size),
+                    jem_counter + pre_train_counter,
+                )
                 for name, weight in my_net.named_parameters():
                     writer.add_histogram(
                         f"param/{name}", weight, jem_counter + pre_train_counter
@@ -393,12 +403,6 @@ if __name__ == "__main__":
                 writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar(
                     "JEM/\u0394nrg", sgld_train_nrg_buff.mean(), jem_counter
-                )
-                elapsed = datetime.datetime.now() - start_time
-                writer.add_scalar(
-                    "combined/seconds_per_instance",
-                    elapsed / ((i + 1) * user_args.batch_size),
-                    jem_counter + pre_train_counter,
                 )
                 writer.add_scalar(
                     "combined/+nrg", x_nrg.item(), jem_counter + pre_train_counter
