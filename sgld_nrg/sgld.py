@@ -96,9 +96,13 @@ class ReplayBuffer(object):
         assert batch_size < self.maxlen
         ndx = torch.randint(self.maxlen, size=(batch_size,))
         out = self.buffer[ndx, ...]
-        mask = TorchBernoulli(probs=self.prob_reinit).sample((batch_size,))
-        out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+        out = self.maybe_reinitialize(x=out)
         return out
+
+    def maybe_reinitialize(self, x):
+        mask = TorchBernoulli(probs=self.prob_reinit).sample((x.size(0),))
+        x[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+        return x
 
     def initialize(self, n):
         x_hat_ = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
@@ -134,8 +138,7 @@ class IndependentReplayBuffer(ReplayBuffer):
         assert batch_size < self.maxlen
         self.latest_ndx = self.rand_index(batch_size)
         out = self.buffer[self.latest_ndx, ...]
-        mask = TorchBernoulli(probs=self.prob_reinit).sample((batch_size,))
-        out[mask > 0.5, ...] = self.initialize(int(mask.sum()))
+        out = self.maybe_reinitialize(out)
         return out
 
     def rand_index(self, batch_size):
