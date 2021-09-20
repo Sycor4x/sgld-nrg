@@ -11,6 +11,7 @@ as per https://arxiv.org/pdf/1912.03263.pdf
 # TODO - periodically, rank all of the MCMC samples by their probability, and the highest-probability samples
 
 import argparse
+import datetime
 import pathlib
 
 import numpy as np
@@ -274,6 +275,7 @@ if __name__ == "__main__":
     pre_train_counter = 0
     pointer = 0
     writer = SummaryWriter()
+    start_time = datetime.datetime.now()
     for pre_train_epoch in range(user_args.pre_epochs):
         print(f"Pre-train epoch {pre_train_epoch} of {user_args.pre_epochs}")
         for i, (x_train, y_train) in enumerate(train):
@@ -299,6 +301,12 @@ if __name__ == "__main__":
                 )
                 writer.add_scalar(
                     "pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
+                )
+                elapsed = datetime.datetime.now() - start_time
+                writer.add_scalar(
+                    "combined/seconds_per_instance",
+                    elapsed / ((i + 1) * user_args.batch_size),
+                    pre_train_counter,
                 )
                 writer.add_scalar(
                     "combined/accuracy", pre_train_buff_acc.mean(), pre_train_counter
@@ -334,6 +342,7 @@ if __name__ == "__main__":
     sgld_train_pnrg_buff = np.zeros(sgld_train_buff)
     sgld_train_nnrg_buff = np.zeros(sgld_train_buff)
     jem_counter = 0
+    start_time = datetime.datetime.now()
     for epoch_num in range(user_args.n_epochs):
         print(f"SGLD-train epoch {epoch_num} of {user_args.n_epochs}")
         for i, (x_train, y_train) in enumerate(train):
@@ -360,7 +369,7 @@ if __name__ == "__main__":
                 print(f"\tBatch {i} of {len(train)}")
                 x_hat_grid = make_grid(
                     -1.0 * (x_hat * normalize_scale + normalize_center),
-                    nrow=min(8, int(np.sqrt(user_args.batch_size)+0.5)),
+                    nrow=min(8, int(np.sqrt(user_args.batch_size) + 0.5)),
                 )  # reverse the scaling applied earlier for display purposes
                 writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
                 writer.add_scalar("JEM/total", total_loss.item(), jem_counter)
@@ -384,6 +393,12 @@ if __name__ == "__main__":
                 writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar(
                     "JEM/\u0394nrg", sgld_train_nrg_buff.mean(), jem_counter
+                )
+                elapsed = datetime.datetime.now() - start_time
+                writer.add_scalar(
+                    "combined/seconds_per_instance",
+                    elapsed / ((i + 1) * user_args.batch_size),
+                    jem_counter + pre_train_counter,
                 )
                 writer.add_scalar(
                     "combined/+nrg", x_nrg.item(), jem_counter + pre_train_counter
