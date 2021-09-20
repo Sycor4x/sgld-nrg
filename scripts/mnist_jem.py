@@ -8,6 +8,7 @@ Implements Stochastic gradient Langevin dynamics for energy-based models,
 as per https://arxiv.org/pdf/1912.03263.pdf
 """
 
+# TODO - periodically, rank all of the MCMC samples by their probability, and the highest-probability samples
 
 import argparse
 import pathlib
@@ -90,7 +91,7 @@ def parse_args():
     )
     parser.add_argument(
         "--network",
-        default="residual",
+        default="simple",
         choices=["simple", "residual"],
         help="which neural network architecture to use for training; see networks.py",
     )
@@ -245,6 +246,7 @@ if __name__ == "__main__":
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
     print(f"The network has {param_ct:,} parameters.")
 
+    # TODO - try using the IndependentReplayBuffer
     my_buffer = ReplayBuffer(
         data_shape=(1, 28, 28),
         data_range=(-1.0, 1.0),
@@ -291,6 +293,7 @@ if __name__ == "__main__":
             pre_train_buff_pnrg[pointer % pre_train_buff_size] = pnrg
             pointer += 1
             if i % pre_train_buff_size == 0 and i > 0:
+                print(f"\tPre-train batch {i} of {len(train)}")
                 writer.add_scalar(
                     "pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
                 )
@@ -356,8 +359,8 @@ if __name__ == "__main__":
             if i % sgld_train_buff == 0:
                 print(f"\tBatch {i} of {len(train)}")
                 x_hat_grid = make_grid(
-                    x_hat * normalize_scale + normalize_center,
-                    nrow=min(8, int(np.sqrt(user_args.batch_size))),
+                    -1.0 * (x_hat * normalize_scale + normalize_center),
+                    nrow=min(8, int(np.sqrt(user_args.batch_size)+0.5)),
                 )  # reverse the scaling applied earlier for display purposes
                 writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
                 writer.add_scalar("JEM/total", total_loss.item(), jem_counter)

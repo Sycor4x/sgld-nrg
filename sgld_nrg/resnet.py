@@ -19,6 +19,7 @@ def activation_func(activation):
             ["leaky_relu", nn.LeakyReLU(negative_slope=0.01, inplace=True)],
             ["selu", nn.SELU(inplace=True)],
             ["elu", nn.ELU(inplace=True)],
+            ["mish", nn.Mish(inplace=True)],
             ["none", nn.Identity()],
         ]
     )[activation]
@@ -153,6 +154,7 @@ class ResNetLayer(nn.Module):
     """
     A ResNet layer composed by `n` blocks stacked one after the other
     """
+
     def __init__(
         self, in_channels, out_channels, block=ResNetBasicBlock, n=1, *args, **kwargs
     ):
@@ -184,6 +186,7 @@ class ResNetEncoder(nn.Module):
     """
     ResNet encoder composed by layers with increasing features.
     """
+
     def __init__(
         self,
         in_channels=3,
@@ -201,14 +204,18 @@ class ResNetEncoder(nn.Module):
             nn.Conv2d(
                 in_channels,
                 self.blocks_sizes[0],
-                kernel_size=7,
-                stride=2,
-                padding=3,
+                kernel_size=(4, 4),
+                # stride=(2,2),
+                # padding=3,
                 bias=False,
             ),
             nn.BatchNorm2d(self.blocks_sizes[0]),
             activation_func(activation),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            nn.MaxPool2d(
+                kernel_size=3,
+                # stride=2,
+                padding=1,
+            ),
         )
 
         self.in_out_block_sizes = list(zip(blocks_sizes, blocks_sizes[1:]))
@@ -253,14 +260,16 @@ class ResnetDecoder(nn.Module):
     output to the correct class by using a fully connected layer.
     """
 
-    def __init__(self, in_features, n_classes):
+    def __init__(self, in_features, n_classes, bias=True):
         super().__init__()
-        self.avg = nn.AdaptiveAvgPool2d((1, 1))
-        self.decoder = nn.Linear(in_features, n_classes)
+        # TODO - see if using maxpool instead solves the problem of creating realistic images
+        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool = nn.AdaptiveMaxPool2d((1, 1))
+        self.decoder = nn.Linear(in_features, n_classes, bias=bias)
 
     def forward(self, x):
-        x = self.avg(x)
-        x = x.view(x.size(0), -1)
+        x = self.pool(x)
+        x = x.flatten(1)
         x = self.decoder(x)
         return x
 
@@ -280,4 +289,4 @@ class ResNet(nn.Module):
 
 
 def small_resent(in_channels, n_classes, block=ResNetBasicBlock, *args, **kwargs):
-    return ResNet(in_channels, n_classes, block=block, depths=[2, 2], *args, **kwargs)
+    return ResNet(in_channels, n_classes, block=block, depths=[2], *args, **kwargs)
