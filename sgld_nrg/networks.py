@@ -6,7 +6,7 @@
 import torch
 import torch.nn as nn
 
-from sgld_nrg.resnet import small_resent
+from sgld_nrg.resnet import small_resent, ResNet
 
 
 class SimpleNet(nn.Module):
@@ -18,15 +18,10 @@ class SimpleNet(nn.Module):
             nn.ELU(),
             nn.Conv2d(32, 64, 4, 1),
             nn.MaxPool2d(2),
-        )
-        self.fc = nn.Sequential(
-            nn.BatchNorm1d(7744),
+            nn.BatchNorm2d(64),
             nn.ELU(),
-            nn.Linear(7744, 128, bias=False),
-            nn.BatchNorm1d(128),
-            nn.ELU(),
-            nn.Linear(128, 10),
         )
+        self.fc = nn.Linear(7744, 10)
 
     def forward(self, x):
         x_cnn = self.conv(x)
@@ -42,7 +37,7 @@ class SimpleNet(nn.Module):
 class Resnet(nn.Module):
     def __init__(self):
         super(Resnet, self).__init__()
-        self.net = small_resent(in_channels=1, n_classes=10, activation="elu")
+        self.net = ResNet(in_channels=1, n_classes=10, depths=[2], activation="elu")
 
     def forward(self, x):
         return self.net(x)
