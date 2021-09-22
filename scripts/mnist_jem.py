@@ -352,17 +352,16 @@ if __name__ == "__main__":
         )
     main_optim = Adam(my_net.parameters(), user_args.lr)
 
-    if user_args.save.exists() and user_args.save.isfile():
+    torch_summary(my_net, (1, 28, 28))
+    param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
+    print(f"The network has {param_ct:,} parameters.")
+    if user_args.save.exists() and user_args.save.absolute().is_file():
         print(f"Loading saved model from {user_args.save}...")
         checkpoint = torch.load(user_args.save)
         my_net.load_state_dict(checkpoint["model_state_dict"])
         main_optim.load_state_dict(checkpoint["optimizer_state_dict"])
 
-    torch_summary(my_net, (1, 28, 28))
-    param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
-    print(f"The network has {param_ct:,} parameters.")
 
-    # TODO - try using the IndependentReplayBuffer
     my_buffer = IndependentReplayBuffer(
         data_shape=(1, 28, 28),
         data_range=(-1.0, 1.0),
