@@ -3,6 +3,9 @@ local_data/
 venv/
 venv-delivery/
 .idea/
+models/
+.DS_Store
+runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

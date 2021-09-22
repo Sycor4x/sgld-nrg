@@ -25,7 +25,7 @@ from torchvision import transforms
 from torchvision.datasets import FashionMNIST, MNIST
 from torchvision.utils import make_grid
 
-from sgld_nrg.networks import Resnet, SimpleNet
+from sgld_nrg.networks import Resnet, SimpleNet, ToyNet
 from sgld_nrg.sgld import IndependentReplayBuffer, SgldLogitEnergy
 from sgld_nrg.transform import AddGaussianNoise
 
@@ -67,6 +67,13 @@ def nonnegative_float(value):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "-s",
+        "--save",
+        required=True,
+        type=pathlib.Path,
+        help="must provide a name for checkpoints; if the checkpoint already exists, the model is loaded",
+    )
+    parser.add_argument(
         "--pretrain_energy_penalty",
         default=0.0,
         type=nonnegative_float,
@@ -93,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--network",
         default="simple",
-        choices=["simple", "residual"],
+        choices=["simple", "residual", "toy"],
         help="which neural network architecture to use for training; see networks.py",
     )
     parser.add_argument(
@@ -135,12 +142,12 @@ def parse_args():
     )
     parser.add_argument(
         "--sgld_steps",
-        default=20,
+        default=15,
         type=positive_int,
         help="how many SGLD steps to take at each iteration",
     )
     parser.add_argument(
-        "-b", "--batch_size", default=64, type=positive_int, help="mini-batch size"
+        "-b", "--batch_size", default=8 * 8, type=positive_int, help="mini-batch size"
     )
     parser.add_argument(
         "-e",
@@ -163,6 +170,105 @@ def get_accuracy(y_hat, y):
     _, predicted = torch.max(y_hat.data, 1)
     correct = (predicted == y).sum().item()
     return correct / y.size(0)
+
+
+def estimate_time_remaining(elapsed_seconds, batch_offset, num_batch):
+    multiplier = (1.0 - (batch_offset + 1) / num_batch) / (batch_offset + 1) * num_batch
+    return elapsed_seconds / 60.0 / 60.0 * multiplier
+
+
+def clf_train_one_epoch(writer):
+    pre_train_buff_size = max(1, int(512 / user_args.batch_size + 0.5))
+    pre_train_buff_xe = np.zeros(pre_train_buff_size)
+    pre_train_buff_acc = np.zeros(pre_train_buff_size)
+    pre_train_buff_pnrg = np.zeros(pre_train_buff_size)
+    pre_val_buff = np.zeros(len(test))
+    pre_val_buff_acc = np.zeros(len(test))
+    pre_val_buff_pnrg = np.zeros(len(test))
+    pre_train_counter = 0
+    pointer = 0
+    xe_loss = 0.0
+    dir = user_args.save.absolute().parent
+    stem = user_args.save.absolute().stem
+    print(stem)
+    for pre_train_epoch in range(user_args.pre_epochs):
+        print(f"Pre-train epoch {pre_train_epoch} of {user_args.pre_epochs}")
+        start_time = datetime.datetime.now()
+        for i, (x_train, y_train) in enumerate(train):
+            my_net.train()
+            pre_train_counter += x_train.size(0)
+            y_logit = my_net(x_train)
+            xe_loss = xe_loss_fn(y_logit, y_train)
+            pnrg = my_net.logsumexp_logits(x_train).mean()
+            total_loss = xe_loss + user_args.pretrain_energy_penalty * pnrg
+            total_loss.backward()
+            pre_train_optim.step()
+            pre_train_optim.zero_grad()
+            pre_train_buff_acc[pointer % pre_train_buff_size] = get_accuracy(
+                y_logit, y_train
+            )
+            pre_train_buff_xe[pointer % pre_train_buff_size] = xe_loss.item()
+            pre_train_buff_pnrg[pointer % pre_train_buff_size] = pnrg
+            pointer += 1
+            if i % pre_train_buff_size == 0 and i > 0:
+                elapsed = (datetime.datetime.now() - start_time) / datetime.timedelta(
+                    seconds=1
+                )
+                epoch_remaining = estimate_time_remaining(
+                    elapsed_seconds=elapsed, batch_offset=i, num_batch=len(train)
+                )
+                print(
+                    f"\tPre-train batch {i} of {len(train)} - est. {epoch_remaining:.3f} hours remaining"
+                )
+                writer.add_scalar(
+                    "pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/seconds_per_instance",
+                    elapsed / ((i + 1) * user_args.batch_size),
+                    pre_train_counter,
+                )
+                writer.add_scalar(
+                    "combined/accuracy", pre_train_buff_acc.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/xe", pre_train_buff_xe.mean(), pre_train_counter
+                )
+                writer.add_scalar(
+                    "combined/+nrg", pre_train_buff_pnrg.mean(), pre_train_counter
+                )
+                for name, weight in my_net.named_parameters():
+                    writer.add_histogram(f"param/{name}", weight, pre_train_counter)
+                    writer.add_histogram(f"grad/{name}", weight.grad, pre_train_counter)
+
+        for j, (x_val, y_val) in enumerate(test):
+            my_net.eval()
+            y_logit = my_net(x_val)
+            xe_loss = xe_loss_fn(y_logit, y_val)
+            pre_val_buff[j] = xe_loss.item()
+            pre_val_buff_acc[j] = get_accuracy(y_logit, y_val)
+            pre_val_buff_pnrg[j] = my_net.logsumexp_logits(x_val).mean()
+        writer.add_scalar(
+            "pre/accuracy/val", pre_val_buff_acc.mean(), pre_train_counter
+        )
+        writer.add_scalar("pre/xe_loss/val", pre_val_buff.mean(), pre_train_counter)
+        writer.add_scalar("pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter)
+        fname = f"{stem}-pre-epoch-{pre_train_epoch}.pth"
+        pre_dest = dir.joinpath(fname)
+        print(f"\tSaving epoch {pre_train_epoch} to {pre_dest}")
+        torch.save(
+            {
+                "epoch": pre_train_epoch,
+                "model_state_dict": my_net.state_dict(),
+                "optimizer_state_dict": pre_train_optim.state_dict(),
+                "loss": xe_loss,
+            },
+            str(pre_dest),
+        )
+    return pre_train_counter
 
 
 if __name__ == "__main__":
@@ -238,10 +344,19 @@ if __name__ == "__main__":
         my_net = SimpleNet()
     elif user_args.network == "residual":
         my_net = Resnet()
+    elif user_args.network == "toy":
+        my_net = ToyNet()
     else:
         raise ValueError(
             f"User argument to `--network` not recognized: {user_args.network}"
         )
+    main_optim = Adam(my_net.parameters(), user_args.lr)
+
+    if user_args.save.exists() and user_args.save.isfile():
+        print(f"Loading saved model from {user_args.save}...")
+        checkpoint = torch.load(user_args.save)
+        my_net.load_state_dict(checkpoint["model_state_dict"])
+        main_optim.load_state_dict(checkpoint["optimizer_state_dict"])
 
     torch_summary(my_net, (1, 28, 28))
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
@@ -262,79 +377,10 @@ if __name__ == "__main__":
         sgld_step=user_args.sgld_steps,
     )
     xe_loss_fn = nn.CrossEntropyLoss(reduction="mean")
-    pre_train_optim = Adam(my_net.parameters(), user_args.lr)
-    main_optim = Adam(my_net.parameters(), user_args.lr)
 
-    pre_train_buff_size = max(1, int(512 / user_args.batch_size + 0.5))
-    pre_train_buff_xe = np.zeros(pre_train_buff_size)
-    pre_train_buff_acc = np.zeros(pre_train_buff_size)
-    pre_train_buff_pnrg = np.zeros(pre_train_buff_size)
-    pre_val_buff = np.zeros(len(test))
-    pre_val_buff_acc = np.zeros(len(test))
-    pre_val_buff_pnrg = np.zeros(len(test))
-    pre_train_counter = 0
-    pointer = 0
     writer = SummaryWriter()
-    start_time = datetime.datetime.now()
-    for pre_train_epoch in range(user_args.pre_epochs):
-        print(f"Pre-train epoch {pre_train_epoch} of {user_args.pre_epochs}")
-        for i, (x_train, y_train) in enumerate(train):
-            my_net.train()
-            pre_train_counter += x_train.size(0)
-            y_logit = my_net(x_train)
-            xe_loss = xe_loss_fn(y_logit, y_train)
-            pnrg = my_net.logsumexp_logits(x_train).mean()
-            total_loss = xe_loss + user_args.pretrain_energy_penalty * pnrg
-            total_loss.backward()
-            pre_train_optim.step()
-            pre_train_optim.zero_grad()
-            pre_train_buff_acc[pointer % pre_train_buff_size] = get_accuracy(
-                y_logit, y_train
-            )
-            pre_train_buff_xe[pointer % pre_train_buff_size] = xe_loss.item()
-            pre_train_buff_pnrg[pointer % pre_train_buff_size] = pnrg
-            pointer += 1
-            if i % pre_train_buff_size == 0 and i > 0:
-                print(f"\tPre-train batch {i} of {len(train)}")
-                writer.add_scalar(
-                    "pre/accuracy/train", pre_train_buff_acc.mean(), pre_train_counter
-                )
-                writer.add_scalar(
-                    "pre/xe_loss/train", pre_train_buff_xe.mean(), pre_train_counter
-                )
-                elapsed = (datetime.datetime.now() - start_time) / datetime.timedelta(
-                    seconds=1
-                )
-                writer.add_scalar(
-                    "combined/seconds_per_instance",
-                    elapsed / ((i + 1) * user_args.batch_size),
-                    pre_train_counter,
-                )
-                writer.add_scalar(
-                    "combined/accuracy", pre_train_buff_acc.mean(), pre_train_counter
-                )
-                writer.add_scalar(
-                    "combined/xe", pre_train_buff_xe.mean(), pre_train_counter
-                )
-                writer.add_scalar(
-                    "combined/+nrg", pre_train_buff_pnrg.mean(), pre_train_counter
-                )
-                for name, weight in my_net.named_parameters():
-                    writer.add_histogram(f"param/{name}", weight, pre_train_counter)
-                    writer.add_histogram(f"grad/{name}", weight.grad, pre_train_counter)
-
-        for j, (x_val, y_val) in enumerate(test):
-            my_net.eval()
-            y_logit = my_net(x_val)
-            xe_loss = xe_loss_fn(y_logit, y_val)
-            pre_val_buff[j] = xe_loss.item()
-            pre_val_buff_acc[j] = get_accuracy(y_logit, y_val)
-            pre_val_buff_pnrg[j] = my_net.logsumexp_logits(x_val).mean()
-        writer.add_scalar(
-            "pre/accuracy/val", pre_val_buff_acc.mean(), pre_train_counter
-        )
-        writer.add_scalar("pre/xe_loss/val", pre_val_buff.mean(), pre_train_counter)
-        writer.add_scalar("pre/+nrg/val", pre_val_buff_pnrg.mean(), pre_train_counter)
+    pre_train_optim = Adam(my_net.parameters(), user_args.lr)
+    pre_train_counter = clf_train_one_epoch(writer=writer)
 
     sgld_train_buff = max(1, int(512 / user_args.batch_size + 0.5))
     sgld_train_total_buff = np.zeros(sgld_train_buff)
@@ -344,9 +390,11 @@ if __name__ == "__main__":
     sgld_train_pnrg_buff = np.zeros(sgld_train_buff)
     sgld_train_nnrg_buff = np.zeros(sgld_train_buff)
     jem_counter = 0
-    start_time = datetime.datetime.now()
+    total_loss = 0.0
     for epoch_num in range(user_args.n_epochs):
+        my_sgld.sgld_step = min(50, my_sgld.sgld_step + 5)
         print(f"SGLD-train epoch {epoch_num} of {user_args.n_epochs}")
+        start_time = datetime.datetime.now()
         for i, (x_train, y_train) in enumerate(train):
             my_net.train()
             jem_counter += x_train.size(0)
@@ -368,10 +416,18 @@ if __name__ == "__main__":
             sgld_train_acc_buff[i % sgld_train_buff] = train_acc
 
             if i % sgld_train_buff == 0:
-                print(f"\tBatch {i} of {len(train)}")
+                elapsed_s = (datetime.datetime.now() - start_time) / datetime.timedelta(
+                    seconds=1
+                )
+                remaining_h = estimate_time_remaining(
+                    elapsed_seconds=elapsed_s, batch_offset=i, num_batch=len(train)
+                )
+                print(
+                    f"\tBatch {i} of {len(train)}; estimate {remaining_h:.2f} hours remaining in this epoch"
+                )
                 x_hat_grid = make_grid(
                     -1.0 * (x_hat * normalize_scale + normalize_center),
-                    nrow=min(8, int(np.sqrt(user_args.batch_size) + 0.5)),
+                    nrow=min(10, int(np.sqrt(user_args.batch_size) + 0.5)),
                 )  # reverse the scaling applied earlier for display purposes
                 writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
                 writer.add_scalar("JEM/total", total_loss.item(), jem_counter)
@@ -380,12 +436,9 @@ if __name__ == "__main__":
                 writer.add_scalar("JEM/+nrg", x_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/-nrg", x_hat_nrg.item(), jem_counter)
                 writer.add_scalar("JEM/accuracy", train_acc, jem_counter)
-                elapsed = (datetime.datetime.now() - start_time) / datetime.timedelta(
-                    seconds=1
-                )
                 writer.add_scalar(
                     "combined/seconds_per_instance",
-                    elapsed / ((i + 1) * user_args.batch_size),
+                    elapsed_s / ((i + 1) * user_args.batch_size),
                     jem_counter + pre_train_counter,
                 )
                 for name, weight in my_net.named_parameters():
@@ -420,4 +473,17 @@ if __name__ == "__main__":
                 writer.add_scalar(
                     "JEM/accuracy", sgld_train_acc_buff.mean(), jem_counter
                 )
+        dir = user_args.save.absolute().parent
+        stem = user_args.save.absolute().stem
+        fname = f"{stem}-epoch-{epoch_num}.pth"
+        dest = dir.joinpath(fname)
+        torch.save(
+            {
+                "epoch": epoch_num,
+                "model_state_dict": my_net.state_dict(),
+                "optimizer_state_dict": main_optim.state_dict(),
+                "loss": total_loss,
+            },
+            str(dest),
+        )
     writer.close()
