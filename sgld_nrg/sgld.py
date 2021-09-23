@@ -4,6 +4,8 @@
 # Creation date: 2021-09-11 (year-month-day)
 
 """
+Implements SGLD to sample from the input data distribution, and various buffers to
+store the MCMC samples.
 """
 
 import torch
@@ -12,16 +14,12 @@ from torch.distributions.bernoulli import Bernoulli as TorchBernoulli
 from torch.distributions.uniform import Uniform as TorchUnif
 import numpy as np
 
-# TODO - change the buffer behavior: initialize the whole tensor as random, then sample form it
-# Also, test a method that always replaces the SGLD result in the same "slot" in the buffer
-# (so we have 10k independent chains)
-
 
 class SgldLogitEnergy(object):
     def __init__(
         self, net: nn.Module, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
     ):
-        assert isinstance(replay_buffer, ReplayBuffer)
+        assert isinstance(replay_buffer, RingReplayBuffer)
         assert isinstance(sgld_lr, float) and sgld_lr > 0.0
         assert isinstance(sgld_step, int) and sgld_step > 0
         assert isinstance(noise, float) and noise > 0.0
@@ -66,14 +64,15 @@ class SgldLogitEnergy(object):
         return x_hat_
 
 
-class ReplayBuffer(object):
+class RingReplayBuffer(object):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
         The ReplayBuffer is a ring buffer.
         :param data_shape: the shape of a sample
         :param data_range: the upper and lower values of the uniform random noise
         :param maxlen: number of samples to maintain
-        :param prob_reinitialize: probability that a chain is initialized with random noise
+        :param prob_reinitialize: probability that a chain is initialized with random
+            noise
         """
         # TODO -- set this up to store & retrieve a label alongside the generated images
         assert len(data_range) == 2
@@ -115,14 +114,14 @@ class ReplayBuffer(object):
         return x
 
 
-class IndependentReplayBuffer(ReplayBuffer):
+class IndependentRingReplayBuffer(RingReplayBuffer):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
         The other replay buffer ReplayBuffer refreshes elements on a circular cadence;
-        This buffer only samples from index i and replaces into index i -- in other words,
-        each chain evolves independently.
+        This buffer only samples from index i and replaces into index i -- in other
+        words, each chain evolves independently.
         """
-        super(IndependentReplayBuffer, self).__init__(
+        super(IndependentRingReplayBuffer, self).__init__(
             data_shape=data_shape,
             data_range=data_range,
             maxlen=maxlen,
@@ -151,7 +150,7 @@ class IndependentReplayBuffer(ReplayBuffer):
         return torch.randint(self.maxlen, size=(batch_size,))
 
 
-class EpochIndependentReplayBuffer(IndependentReplayBuffer):
+class EpochIndependentReplayBuffer(IndependentRingReplayBuffer):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
         The ReplayBuffer is a ring buffer. By contrast, this buffer only samples from
@@ -159,10 +158,11 @@ class EpochIndependentReplayBuffer(IndependentReplayBuffer):
         each chain evolves independently. Additionally, it samples without replacement
         until the pool is depleted.
 
-        The downside to this is that it guarantees that the samples are "stale" as the epoch proceeds,
-        creating a sawtooth pattern in the energy for the MCMC data.
+        A side-effect to this is that it guarantees that the samples are "stale" as
+        the epoch proceeds, creating a sawtooth pattern in the energy for the MCMC
+        data. It's not clear that this is truly a downside, though.
         """
-        super(IndependentReplayBuffer, self).__init__(
+        super(IndependentRingReplayBuffer, self).__init__(
             data_shape=data_shape,
             data_range=data_range,
             maxlen=maxlen,

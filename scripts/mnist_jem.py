@@ -8,13 +8,10 @@ Implements Stochastic gradient Langevin dynamics for energy-based models,
 as per https://arxiv.org/pdf/1912.03263.pdf
 """
 
-# TODO -- test EpochIndependentReplayBuffer
 # TODO - periodically, rank all of the MCMC samples by their probability, and the highest-probability samples
 # TODO -- implement checkpointing & automatic reversion to a saved model if some loss metric increases too much
 # TODO -- implement 3-way split for MNIST
 # TODO -- double batch size each epoch, up to some maximum -- e.g., from 8 to 128
-# TODO -- change how the grid view works so that you're always getting 36 images, regardless of batch size
-# TODO -- implement label replay buffer and label SGLD
 import datetime
 import pathlib
 
@@ -30,7 +27,7 @@ from torchvision.datasets import FashionMNIST, MNIST
 from torchvision.utils import make_grid
 
 from sgld_nrg.networks import Resnet, SimpleNet, ToyNet
-from sgld_nrg.sgld import IndependentReplayBuffer, SgldLogitEnergy
+from sgld_nrg.sgld import IndependentRingReplayBuffer, SgldLogitEnergy
 from sgld_nrg.transform import AddGaussianNoise
 from sgld_nrg.utils import estimate_time_remaining, get_accuracy, parse_args
 
@@ -118,7 +115,7 @@ if __name__ == "__main__":
     torch_summary(my_net, (1, 28, 28))
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
     print(f"The network has {param_ct:,} parameters.")
-    my_buffer = IndependentReplayBuffer(
+    my_buffer = IndependentRingReplayBuffer(
         data_shape=(1, 28, 28),
         data_range=(-1.0, 1.0),
         maxlen=user_args.replay_buff,
