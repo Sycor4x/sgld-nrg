@@ -70,6 +70,13 @@ class SgldLogitEnergy(object):
 
 class ReplayBuffer(object):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
+        """
+        The ReplayBuffer is a ring buffer.
+        :param data_shape: the shape of a sample
+        :param data_range: the upper and lower values of the uniform random noise
+        :param maxlen: number of samples to maintain
+        :param prob_reinitialize: probability that a chain is initialized with random noise
+        """
         # TODO -- set this up to store & retrieve a label alongside the generated images
         assert len(data_range) == 2
         assert data_range[0] != data_range[1]
@@ -108,37 +115,6 @@ class ReplayBuffer(object):
     def initialize(self, n):
         x = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
         return x
-
-
-class LabelReplayBuffer(ReplayBuffer):
-    def __init__(
-        self, data_shape, data_range, labels=None, maxlen=10000, prob_reinitialize=0.05
-    ):
-        super(LabelReplayBuffer, self).__init__(
-            data_shape=data_shape,
-            data_range=data_range,
-            maxlen=maxlen,
-            prob_reinitialize=prob_reinitialize,
-        )
-        if isinstance(labels, torch.Tensor):
-            assert maxlen % labels.numel() == 0
-            self.labels = labels.repeat_interleave(maxlen / labels.numel())
-        elif labels is None:
-            self.labels = None
-        else:
-            raise ValueError("Labels must be None or torch.Tensor.")
-
-    def sample(self, batch_size):
-        assert isinstance(batch_size, int)
-        assert batch_size < self.maxlen
-        ndx = torch.randint(self.maxlen, size=(batch_size,))
-        x = self.buffer[ndx, ...]
-        x = self.maybe_reinitialize(x=x)
-        if self.labels is not None:
-            y = self.labels[ndx]
-        else:
-            y = None
-        return x, y
 
 
 class IndependentReplayBuffer(ReplayBuffer):
@@ -180,9 +156,13 @@ class IndependentReplayBuffer(ReplayBuffer):
 class EpochIndependentReplayBuffer(IndependentReplayBuffer):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
-        The other replay buffer ReplayBuffer refreshes elements on a circular cadence;
-        This buffer only samples from index i and replaces into index i -- in other words,
-        each chain evolves independently.
+        The ReplayBuffer is a ring buffer. By contrast, this buffer only samples from
+        index i and replaces into index i -- in other words,
+        each chain evolves independently. Additionally, it samples without replacement
+        until the pool is depleted.
+
+        The downside to this is that it guarantees that the samples are "stale" as the epoch proceeds,
+        creating a sawtooth pattern in the energy for the MCMC data.
         """
         super(IndependentReplayBuffer, self).__init__(
             data_shape=data_shape,
@@ -190,23 +170,14 @@ class EpochIndependentReplayBuffer(IndependentReplayBuffer):
             maxlen=maxlen,
             prob_reinitialize=prob_reinitialize,
         )
-        self.remaining_ndx = set(range(maxlen))
+        self.remaining_ndx = np.arange(maxlen)
         self.latest_ndx = None
-
-    def append(self, new):
-        if new.size(0) == self.latest_ndx.numel():
-            into = self.latest_ndx
-        else:
-            raise ValueError(
-                f"cannot append `new` with shape {new.size} using latest_ndx with shape {self.latest_ndx}"
-            )
-        self.buffer[into, ...] = new
 
     def sample(self, batch_size):
         assert isinstance(batch_size, int)
         assert batch_size < self.maxlen
-        if len(self.remaining_ndx) < batch_size:
-            self.remaining_ndx = set(range(self.buffer.size(0)))
+        if self.remaining_ndx.size < batch_size:
+            self.remaining_ndx = np.arange(self.buffer.size(0))
         self.latest_ndx = self.rand_index(batch_size)
         out = self.buffer[self.latest_ndx, ...]
         out = self.maybe_reinitialize(out)
@@ -214,5 +185,36 @@ class EpochIndependentReplayBuffer(IndependentReplayBuffer):
 
     def rand_index(self, batch_size):
         ndx = np.random.choice(self.remaining_ndx, size=batch_size, replace=False)
-        self.remaining_ndx -= set(ndx)
-        return ndx
+        self.remaining_ndx = np.setdiff1d(self.remaining_ndx, ndx, assume_unique=True)
+        return torch.LongTensor(ndx)
+
+
+class LabelReplayBuffer(ReplayBuffer):
+    def __init__(
+        self, data_shape, data_range, labels=None, maxlen=10000, prob_reinitialize=0.05
+    ):
+        super(LabelReplayBuffer, self).__init__(
+            data_shape=data_shape,
+            data_range=data_range,
+            maxlen=maxlen,
+            prob_reinitialize=prob_reinitialize,
+        )
+        if isinstance(labels, torch.Tensor):
+            assert maxlen % labels.numel() == 0
+            self.labels = labels.repeat_interleave(maxlen / labels.numel())
+        elif labels is None:
+            self.labels = None
+        else:
+            raise ValueError("Labels must be None or torch.Tensor.")
+
+    def sample(self, batch_size):
+        assert isinstance(batch_size, int)
+        assert batch_size < self.maxlen
+        ndx = torch.randint(self.maxlen, size=(batch_size,))
+        x = self.buffer[ndx, ...]
+        x = self.maybe_reinitialize(x=x)
+        if self.labels is not None:
+            y = self.labels[ndx]
+        else:
+            y = None
+        return x, y

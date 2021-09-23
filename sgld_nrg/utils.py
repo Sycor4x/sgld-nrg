@@ -139,7 +139,10 @@ def parse_args():
         help="how many SGLD steps to take at each iteration",
     )
     parser.add_argument(
-        "-b", "--batch_size", default=8 * 8, type=positive_int, help="mini-batch size"
+        "-b", "--batch_size_min", default=8 , type=positive_int, help="mini-batch size"
+    )
+    parser.add_argument(
+         "--batch_size_max", default=256, type=positive_int, help="largest mini-batch size"
     )
     parser.add_argument(
         "-e",
