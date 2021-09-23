@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from torch.distributions.bernoulli import Bernoulli as TorchBernoulli
 from torch.distributions.uniform import Uniform as TorchUnif
+import numpy as np
 
 # TODO - change the buffer behavior: initialize the whole tensor as random, then sample form it
 # Also, test a method that always replaces the SGLD result in the same "slot" in the buffer (so we have 10k independent chains)
@@ -69,7 +70,14 @@ class SgldLogitEnergy(object):
 
 class ReplayBuffer(object):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
-        # TODO - allow to set seed
+        """
+        The ReplayBuffer is a ring buffer.
+        :param data_shape: the shape of a sample
+        :param data_range: the upper and lower values of the uniform random noise
+        :param maxlen: number of samples to maintain
+        :param prob_reinitialize: probability that a chain is initialized with random noise
+        """
+        # TODO -- set this up to store & retrieve a label alongside the generated images
         assert len(data_range) == 2
         assert data_range[0] != data_range[1]
         assert all(isinstance(s, int) for s in data_shape)
@@ -95,9 +103,9 @@ class ReplayBuffer(object):
         assert isinstance(batch_size, int)
         assert batch_size < self.maxlen
         ndx = torch.randint(self.maxlen, size=(batch_size,))
-        out = self.buffer[ndx, ...]
-        out = self.maybe_reinitialize(x=out)
-        return out
+        x = self.buffer[ndx, ...]
+        x = self.maybe_reinitialize(x=x)
+        return x
 
     def maybe_reinitialize(self, x):
         mask = TorchBernoulli(probs=self.prob_reinit).sample((x.size(0),))
@@ -105,8 +113,8 @@ class ReplayBuffer(object):
         return x
 
     def initialize(self, n):
-        x_hat_ = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
-        return x_hat_
+        x = TorchUnif(min(self.range), max(self.range)).sample((n, *self.shape))
+        return x
 
 
 class IndependentReplayBuffer(ReplayBuffer):
@@ -143,3 +151,70 @@ class IndependentReplayBuffer(ReplayBuffer):
 
     def rand_index(self, batch_size):
         return torch.randint(self.maxlen, size=(batch_size,))
+
+
+class EpochIndependentReplayBuffer(IndependentReplayBuffer):
+    def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
+        """
+        The ReplayBuffer is a ring buffer. By contrast, this buffer only samples from
+        index i and replaces into index i -- in other words,
+        each chain evolves independently. Additionally, it samples without replacement
+        until the pool is depleted.
+
+        The downside to this is that it guarantees that the samples are "stale" as the epoch proceeds,
+        creating a sawtooth pattern in the energy for the MCMC data.
+        """
+        super(IndependentReplayBuffer, self).__init__(
+            data_shape=data_shape,
+            data_range=data_range,
+            maxlen=maxlen,
+            prob_reinitialize=prob_reinitialize,
+        )
+        self.remaining_ndx = np.arange(maxlen)
+        self.latest_ndx = None
+
+    def sample(self, batch_size):
+        assert isinstance(batch_size, int)
+        assert batch_size < self.maxlen
+        if self.remaining_ndx.size < batch_size:
+            self.remaining_ndx = np.arange(self.buffer.size(0))
+        self.latest_ndx = self.rand_index(batch_size)
+        out = self.buffer[self.latest_ndx, ...]
+        out = self.maybe_reinitialize(out)
+        return out
+
+    def rand_index(self, batch_size):
+        ndx = np.random.choice(self.remaining_ndx, size=batch_size, replace=False)
+        self.remaining_ndx = np.setdiff1d(self.remaining_ndx, ndx, assume_unique=True)
+        return torch.LongTensor(ndx)
+
+
+class LabelReplayBuffer(ReplayBuffer):
+    def __init__(
+        self, data_shape, data_range, labels=None, maxlen=10000, prob_reinitialize=0.05
+    ):
+        super(LabelReplayBuffer, self).__init__(
+            data_shape=data_shape,
+            data_range=data_range,
+            maxlen=maxlen,
+            prob_reinitialize=prob_reinitialize,
+        )
+        if isinstance(labels, torch.Tensor):
+            assert maxlen % labels.numel() == 0
+            self.labels = labels.repeat_interleave(maxlen / labels.numel())
+        elif labels is None:
+            self.labels = None
+        else:
+            raise ValueError("Labels must be None or torch.Tensor.")
+
+    def sample(self, batch_size):
+        assert isinstance(batch_size, int)
+        assert batch_size < self.maxlen
+        ndx = torch.randint(self.maxlen, size=(batch_size,))
+        x = self.buffer[ndx, ...]
+        x = self.maybe_reinitialize(x=x)
+        if self.labels is not None:
+            y = self.labels[ndx]
+        else:
+            y = None
+        return x, y
