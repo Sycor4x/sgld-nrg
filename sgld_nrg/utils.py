@@ -11,6 +11,23 @@ import pathlib
 import torch
 
 
+def restore_checkpoint(checkpoint_file):
+    # TODO
+    return
+
+
+def checkpoint_model():
+    # TODO
+    return
+
+
+def maybe_restore_checkpoint(checkpoint_file, loss, previous_loss):
+    if loss > previous_loss:
+        restore_checkpoint(checkpoint_file)
+    # TODO
+    return
+
+
 def get_accuracy(y_hat, y):
     _, predicted = torch.max(y_hat.data, 1)
     correct = (predicted == y).sum().item()
@@ -92,7 +109,7 @@ def parse_args():
     parser.add_argument(
         "--network",
         default="simple",
-        choices=["simple", "resnet", "toy"],
+        choices=["resnet", "simple", "toy"],
         help="which neural network architecture to use for training; see networks.py",
     )
     parser.add_argument(
@@ -124,7 +141,7 @@ def parse_args():
         "--replay_buff",
         default=10000,
         type=positive_int,
-        help="How many chains to store in the SGLD MCMC buffer",
+        help="How many samples to store in the SGLD MCMC buffer",
     )
     parser.add_argument(
         "--prob_reinit",
@@ -136,10 +153,14 @@ def parse_args():
         "--sgld_steps",
         default=15,
         type=positive_int,
-        help="how many SGLD steps to take at each iteration",
+        help="how many SGLD steps to take at each iteration. This value is increased each epoch, up to some maximum.",
     )
     parser.add_argument(
-        "-b", "--batch_size_min", default=8, type=positive_int, help="mini-batch size"
+        "-b",
+        "--batch_size_min",
+        default=8,
+        type=positive_int,
+        help="the initial mini-batch size",
     )
     parser.add_argument(
         "--batch_size_max",
