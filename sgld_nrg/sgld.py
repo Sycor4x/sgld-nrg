@@ -13,7 +13,8 @@ from torch.distributions.uniform import Uniform as TorchUnif
 import numpy as np
 
 # TODO - change the buffer behavior: initialize the whole tensor as random, then sample form it
-# Also, test a method that always replaces the SGLD result in the same "slot" in the buffer (so we have 10k independent chains)
+# Also, test a method that always replaces the SGLD result in the same "slot" in the buffer
+# (so we have 10k independent chains)
 
 
 class SgldLogitEnergy(object):
@@ -30,9 +31,6 @@ class SgldLogitEnergy(object):
         self.sgld_step = sgld_step
         self.noise = noise
         self.replay = replay_buffer
-
-    def __len__(self):
-        return len(self.replay)
 
     def get_energy(self, x_hat_):
         return -1.0 * self.net.logsumexp_logits(x_hat_)
@@ -187,34 +185,3 @@ class EpochIndependentReplayBuffer(IndependentReplayBuffer):
         ndx = np.random.choice(self.remaining_ndx, size=batch_size, replace=False)
         self.remaining_ndx = np.setdiff1d(self.remaining_ndx, ndx, assume_unique=True)
         return torch.LongTensor(ndx)
-
-
-class LabelReplayBuffer(ReplayBuffer):
-    def __init__(
-        self, data_shape, data_range, labels=None, maxlen=10000, prob_reinitialize=0.05
-    ):
-        super(LabelReplayBuffer, self).__init__(
-            data_shape=data_shape,
-            data_range=data_range,
-            maxlen=maxlen,
-            prob_reinitialize=prob_reinitialize,
-        )
-        if isinstance(labels, torch.Tensor):
-            assert maxlen % labels.numel() == 0
-            self.labels = labels.repeat_interleave(maxlen / labels.numel())
-        elif labels is None:
-            self.labels = None
-        else:
-            raise ValueError("Labels must be None or torch.Tensor.")
-
-    def sample(self, batch_size):
-        assert isinstance(batch_size, int)
-        assert batch_size < self.maxlen
-        ndx = torch.randint(self.maxlen, size=(batch_size,))
-        x = self.buffer[ndx, ...]
-        x = self.maybe_reinitialize(x=x)
-        if self.labels is not None:
-            y = self.labels[ndx]
-        else:
-            y = None
-        return x, y
