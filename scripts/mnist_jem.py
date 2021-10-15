@@ -8,10 +8,10 @@ Implements Stochastic gradient Langevin dynamics for energy-based models,
 as per https://arxiv.org/pdf/1912.03263.pdf
 """
 
-# TODO - periodically, rank all of the MCMC samples by their probability, and the highest-probability samples
+# TODO - periodically, rank all of the MCMC samples by their probability, and plot the highest-probability samples
 # TODO -- implement checkpointing & automatic reversion to a saved model if some loss metric increases too much
-# TODO -- implement 3-way split for MNIST
-# TODO -- double batch size each epoch, up to some maximum -- e.g., from 8 to 128
+# TODO -- implement 3-way split for MNIST (we have 2-way right now)
+
 import datetime
 import pathlib
 
@@ -27,13 +27,13 @@ from torchvision.datasets import FashionMNIST, MNIST
 from torchvision.utils import make_grid
 
 from sgld_nrg.networks import Resnet, SimpleNet, ToyNet
-from sgld_nrg.sgld import IndependentRingReplayBuffer, SgldLogitEnergy
+from sgld_nrg.sgld import IndependentReplayBuffer, SgldLogitEnergy
 from sgld_nrg.transform import AddGaussianNoise
 from sgld_nrg.utils import estimate_time_remaining, get_accuracy, parse_args
 
 if __name__ == "__main__":
     user_args = parse_args()
-    dest_dir = pathlib.Path("local_data")
+    data_dir = pathlib.Path("local_data")
     normalize_center = 0.5
     normalize_scale = 0.5
     scale_list = [
@@ -57,14 +57,14 @@ if __name__ == "__main__":
     print(f"We are using these transforms:\n{augmentation_xform}")
     if user_args.fashion:
         train = FashionMNIST(
-            dest_dir,
+            data_dir,
             train=True,
             transform=augmentation_xform,
             target_transform=None,
             download=True,
         )
         test = FashionMNIST(
-            dest_dir,
+            data_dir,
             train=False,
             transform=scale_xform,
             target_transform=None,
@@ -72,14 +72,14 @@ if __name__ == "__main__":
         )
     else:
         train = MNIST(
-            dest_dir,
+            data_dir,
             train=True,
             transform=augmentation_xform,
             target_transform=None,
             download=True,
         )
         test = MNIST(
-            dest_dir,
+            data_dir,
             train=False,
             transform=scale_xform,
             target_transform=None,
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         )
     train = DataLoader(
         train,
-        batch_size=user_args.batch_size_min,
+        batch_size=user_args.batch_size,
         shuffle=True,
         drop_last=True,
         num_workers=user_args.num_workers,
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     torch_summary(my_net, (1, 28, 28))
     param_ct = sum(p.numel() for p in my_net.parameters() if p.requires_grad)
     print(f"The network has {param_ct:,} parameters.")
-    my_buffer = IndependentRingReplayBuffer(
+    my_buffer = IndependentReplayBuffer(
         data_shape=(1, 28, 28),
         data_range=(-1.0, 1.0),
         maxlen=user_args.replay_buff,
@@ -129,28 +129,32 @@ if __name__ == "__main__":
         sgld_step=user_args.sgld_steps,
     )
     if user_args.save.exists() and user_args.save.absolute().is_file():
-        print(f"Loading saved model from {user_args.save}...")
+        print(
+            f"Loading saved model from {user_args.save}; continuing to train from this checkpoint..."
+        )
         checkpoint = torch.load(user_args.save)
         my_net.load_state_dict(checkpoint["model_state_dict"])
         main_optim.load_state_dict(checkpoint["optimizer_state_dict"])
         my_sgld.replay.buffer = checkpoint["MCMC_samples"]
     else:
         print(
-            f"No saved model {user_args.save} found; training the model from its random initialization..."
+            f"No saved model {user_args.save} found; training the model from a random initialization..."
         )
 
     xe_loss_fn = nn.CrossEntropyLoss(reduction="mean")
 
     writer = SummaryWriter()
 
-    sgld_train_buff = max(4, int(512 / user_args.batch_size_min + 0.5))
+    sgld_train_buff = max(4, int(512 / user_args.batch_size + 0.5))
     sgld_train_total_buff = np.zeros(sgld_train_buff)
     sgld_train_xe_buff = np.zeros(sgld_train_buff)
     sgld_train_nrg_buff = np.zeros(sgld_train_buff)
     sgld_train_acc_buff = np.zeros(sgld_train_buff)
     sgld_train_pnrg_buff = np.zeros(sgld_train_buff)
     sgld_train_nnrg_buff = np.zeros(sgld_train_buff)
-    sgld_sample_buff = torch.zeros(36, 1, 28, 28)
+    sgld_sample_buff = torch.zeros(
+        36, 1, 28, 28
+    )  # fixed at 36 images, regardless of batch size
     jem_counter = 0
     total_loss = 0.0
     for epoch_num in range(user_args.n_epochs):
@@ -163,7 +167,7 @@ if __name__ == "__main__":
             y_logit = my_net(x_train)
             xe_loss = xe_loss_fn(y_logit, y_train)
             x_nrg = my_net.logsumexp_logits(x_train).mean()
-            x_hat = my_sgld(user_args.batch_size_min)
+            x_hat = my_sgld(user_args.batch_size)
             x_hat_nrg = my_net.logsumexp_logits(x_hat).mean()
             total_loss = xe_loss + x_nrg - x_hat_nrg
             total_loss.backward()
@@ -199,18 +203,38 @@ if __name__ == "__main__":
                     ),  # reverse the scaling applied earlier for display purposes
                     nrow=int(np.sqrt(sgld_sample_buff.size(0)) + 0.5),
                 )
-                writer.add_image("JEM/x_hat", x_hat_grid, jem_counter)
-                writer.add_scalar("JEM/total", total_loss.item(), jem_counter)
-                writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
-                writer.add_scalar(
-                    "JEM/\u0394nrg", (x_nrg - x_hat_nrg).item(), jem_counter
+                writer.add_image("mcmc_batch/x_hat", x_hat_grid, jem_counter)
+                best_samples, worst_samples, mcmc_energy = my_sgld.summarize(
+                    k=sgld_sample_buff.size(0), batch_size=100
                 )
-                writer.add_scalar("JEM/+nrg", x_nrg.item(), jem_counter)
-                writer.add_scalar("JEM/-nrg", x_hat_nrg.item(), jem_counter)
-                writer.add_scalar("JEM/accuracy", train_acc, jem_counter)
+                writer.add_histogram(f"nrg/mcmc_energy", mcmc_energy, jem_counter)
+                writer.add_image(
+                    "top/best",
+                    make_grid(
+                        -1.0 * best_samples,
+                        nrow=int(np.sqrt(sgld_sample_buff.size(0)) + 0.5),
+                    ),
+                    jem_counter,
+                )
+                writer.add_image(
+                    "top/worst",
+                    make_grid(
+                        -1.0 * worst_samples,
+                        nrow=int(np.sqrt(sgld_sample_buff.size(0)) + 0.5),
+                    ),
+                    jem_counter,
+                )
+                writer.add_scalar("loss/total", total_loss.item(), jem_counter)
+                writer.add_scalar("loss/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar(
-                    "combined/seconds_per_instance",
-                    elapsed_s / ((i + 1) * user_args.batch_size_min),
+                    "loss/\u0394nrg", (x_nrg - x_hat_nrg).item(), jem_counter
+                )
+                writer.add_scalar("loss/+nrg", x_nrg.item(), jem_counter)
+                writer.add_scalar("loss/-nrg", x_hat_nrg.item(), jem_counter)
+                writer.add_scalar("auxiliary/accuracy", train_acc, jem_counter)
+                writer.add_scalar(
+                    "auxiliary/seconds_per_instance",
+                    elapsed_s / ((i + 1) * user_args.batch_size),
                     jem_counter,
                 )
                 for name, weight in my_net.named_parameters():
@@ -219,32 +243,26 @@ if __name__ == "__main__":
 
             if i > 0 and i % sgld_train_buff == 0:
                 writer.add_scalar(
-                    "JEM/total", sgld_train_total_buff.mean(), jem_counter
+                    "loss/total", sgld_train_total_buff.mean(), jem_counter
                 )
-                writer.add_scalar("JEM/xe", sgld_train_xe_buff.mean(), jem_counter)
+                writer.add_scalar("loss/xe", sgld_train_xe_buff.mean(), jem_counter)
                 writer.add_scalar(
-                    "JEM/\u0394nrg", sgld_train_nrg_buff.mean(), jem_counter
+                    "loss/\u0394nrg", sgld_train_nrg_buff.mean(), jem_counter
                 )
-                writer.add_scalar("combined/+nrg", x_nrg.item(), jem_counter)
+                writer.add_scalar("loss/+nrg", sgld_train_pnrg_buff.mean(), jem_counter)
+                writer.add_scalar("loss/-nrg", sgld_train_nnrg_buff.mean(), jem_counter)
                 writer.add_scalar(
-                    "combined/xe",
-                    sgld_train_xe_buff.mean(),
-                    jem_counter,
+                    "auxiliary/accuracy", sgld_train_acc_buff.mean(), jem_counter
                 )
-                writer.add_scalar("combined/accuracy", train_acc, jem_counter)
-                writer.add_scalar("JEM/+nrg", sgld_train_pnrg_buff.mean(), jem_counter)
-                writer.add_scalar("JEM/-nrg", sgld_train_nnrg_buff.mean(), jem_counter)
-                writer.add_scalar(
-                    "JEM/accuracy", sgld_train_acc_buff.mean(), jem_counter
-                )
+                writer.add_scalar("auxiliary/accuracy", train_acc, jem_counter)
         for j, (x_test, y_test) in enumerate(test):
             # TODO
             break
-        dir = user_args.save.absolute().parent
+        save_dir = user_args.save.absolute().parent
         stem = user_args.save.absolute().stem
         fname = f"{stem}-epoch-{epoch_num}.pth"
-        dest = dir.joinpath(fname)
-        print(f"Saving model checkpoint to {dest}...")
+        save_dest = save_dir.joinpath(fname)
+        print(f"Saving model checkpoint to {save_dest}...")
         torch.save(
             {
                 "epoch": epoch_num,
@@ -253,6 +271,6 @@ if __name__ == "__main__":
                 "loss": total_loss,
                 "MCMC_samples": my_sgld.replay.buffer,
             },
-            str(dest),
+            str(save_dest),
         )
     writer.close()

@@ -13,11 +13,19 @@ import torch.nn as nn
 from torch.distributions.bernoulli import Bernoulli as TorchBernoulli
 from torch.distributions.uniform import Uniform as TorchUnif
 import numpy as np
+from sgld_nrg.networks import EnergyModel
+
+
+def make_batch(iterable, n=1):
+    assert n > 0
+    length = len(iterable)
+    for ndx in range(0, length, n):
+        yield iterable[ndx : min(ndx + n, length)]
 
 
 class SgldLogitEnergy(object):
     def __init__(
-        self, net: nn.Module, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
+        self, net: EnergyModel, replay_buffer, sgld_lr=1.0, sgld_step=20, noise=0.01
     ):
         assert isinstance(replay_buffer, RingReplayBuffer)
         assert isinstance(sgld_lr, float) and sgld_lr > 0.0
@@ -62,6 +70,28 @@ class SgldLogitEnergy(object):
         x_hat_ = x_hat_.detach()
         self.replay.append(x_hat_)
         return x_hat_
+
+    @torch.no_grad()
+    def summarize(self, k=36, batch_size=100):
+        """
+        Finds the best samples in the MCMC buffer and returns them.
+        :param k: positive int - selects the k samples with the largest logsumexp(logit)
+        :param batch_size: positive int - how many samples to push through the network at a time
+        :return: torch.Tensor
+        """
+        assert k > 0 and isinstance(k, int)
+        assert batch_size > 0 and isinstance(batch_size, int)
+        scores = torch.zeros(self.replay.maxlen)
+        net_mode = self.net.training
+        self.net.eval()
+        for ndx in make_batch(range(self.replay.maxlen), batch_size):
+            batch = self.replay.buffer[ndx, ...]
+            scores[ndx] = self.net.logsumexp_logits(batch)
+        ndx_sort = torch.argsort(scores)
+        best = self.replay.buffer[ndx_sort[:k], ...]
+        worst = self.replay.buffer[ndx_sort[-k:], ...]
+        self.net.training = net_mode
+        return best, worst, scores
 
 
 class RingReplayBuffer(object):
@@ -114,14 +144,14 @@ class RingReplayBuffer(object):
         return x
 
 
-class IndependentRingReplayBuffer(RingReplayBuffer):
+class IndependentReplayBuffer(RingReplayBuffer):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
         The other replay buffer ReplayBuffer refreshes elements on a circular cadence;
         This buffer only samples from index i and replaces into index i -- in other
         words, each chain evolves independently.
         """
-        super(IndependentRingReplayBuffer, self).__init__(
+        super(IndependentReplayBuffer, self).__init__(
             data_shape=data_shape,
             data_range=data_range,
             maxlen=maxlen,
@@ -131,12 +161,11 @@ class IndependentRingReplayBuffer(RingReplayBuffer):
 
     def append(self, new):
         if new.size(0) == self.latest_ndx.numel():
-            into = self.latest_ndx
+            self.buffer[self.latest_ndx, ...] = new
         else:
             raise ValueError(
                 f"cannot append `new` with shape {new.size} using latest_ndx with shape {self.latest_ndx}"
             )
-        self.buffer[into, ...] = new
 
     def sample(self, batch_size):
         assert isinstance(batch_size, int)
@@ -150,7 +179,7 @@ class IndependentRingReplayBuffer(RingReplayBuffer):
         return torch.randint(self.maxlen, size=(batch_size,))
 
 
-class EpochIndependentReplayBuffer(IndependentRingReplayBuffer):
+class EpochIndependentReplayBuffer(IndependentReplayBuffer):
     def __init__(self, data_shape, data_range, maxlen=10000, prob_reinitialize=0.05):
         """
         The ReplayBuffer is a ring buffer. By contrast, this buffer only samples from
@@ -162,7 +191,7 @@ class EpochIndependentReplayBuffer(IndependentRingReplayBuffer):
         the epoch proceeds, creating a sawtooth pattern in the energy for the MCMC
         data. It's not clear that this is truly a downside, though.
         """
-        super(IndependentRingReplayBuffer, self).__init__(
+        super(IndependentReplayBuffer, self).__init__(
             data_shape=data_shape,
             data_range=data_range,
             maxlen=maxlen,
@@ -175,7 +204,7 @@ class EpochIndependentReplayBuffer(IndependentRingReplayBuffer):
         assert isinstance(batch_size, int)
         assert batch_size < self.maxlen
         if self.remaining_ndx.size < batch_size:
-            self.remaining_ndx = np.arange(self.buffer.size(0))
+            self.remaining_ndx = np.arange(self.maxlen)
         self.latest_ndx = self.rand_index(batch_size)
         out = self.buffer[self.latest_ndx, ...]
         out = self.maybe_reinitialize(out)

@@ -21,10 +21,11 @@ def checkpoint_model():
     return
 
 
-def maybe_restore_checkpoint(checkpoint_file, loss, previous_loss):
+def maybe_restore_checkpoint(checkpoint_file, loss, previous_loss, margin):
     if loss > previous_loss:
         restore_checkpoint(checkpoint_file)
-    # TODO
+    else:
+        checkpoint_model(checkpoint_file)
     return
 
 
@@ -157,16 +158,10 @@ def parse_args():
     )
     parser.add_argument(
         "-b",
-        "--batch_size_min",
-        default=8,
+        "--batch_size",
+        default=64,
         type=positive_int,
         help="the initial mini-batch size",
-    )
-    parser.add_argument(
-        "--batch_size_max",
-        default=256,
-        type=positive_int,
-        help="largest mini-batch size",
     )
     parser.add_argument(
         "-e",
